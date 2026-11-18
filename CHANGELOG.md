@@ -28,6 +28,9 @@ All notable changes to this package. The format follows
     permission options are matched by ACP kind, then by name ("Allow"/"Deny");
   - `serve --debug` (or `MS_AGENT_KIT_DEBUG=1`) logs each ACP message type in
     and out, and permission decisions, never the text.
+- A client that hangs up (MIA, ngrok) no longer prints a Python traceback
+  (`ConnectionResetError` in `http.server`) in the bridge window; with
+  `--debug` it is one line. Other errors keep their traceback.
 
 ### Changed
 
