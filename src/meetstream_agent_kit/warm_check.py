@@ -15,6 +15,7 @@ import dataclasses
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -61,7 +62,13 @@ def _fail(config: BridgeConfig, message: str, t0: float) -> WarmCheck:
     return WarmCheck(False, message, fix, total_ms=(time.monotonic() - t0) * 1000)
 
 
-def check_warm(config: BridgeConfig, *, turn: bool, timeout_s: float = 120.0) -> WarmCheck:
+def check_warm(
+    config: BridgeConfig,
+    *,
+    turn: bool,
+    timeout_s: float = 120.0,
+    on_stage: Callable[[str, float], None] | None = None,
+) -> WarmCheck:
     """Start the agent's warm ACP session with the meeting tools; with ``turn``, also call a test tool."""
     t0 = time.monotonic()
     quiet = dataclasses.replace(config, quiet=True, prime=False, timeout_s=min(config.timeout_s, timeout_s))
@@ -85,6 +92,8 @@ def check_warm(config: BridgeConfig, *, turn: bool, timeout_s: float = 120.0) ->
         not_ready = driver.check_ready()
         if not_ready:
             return _fail(quiet, not_ready, t0)
+        if on_stage:
+            on_stage("ready", (time.monotonic() - t0) * 1000)
         if offers_tools and not turn:
             deadline = time.monotonic() + TOOL_LIST_WAIT_S
             while session.mcp_tools_listed is None and time.monotonic() < deadline:
@@ -94,14 +103,22 @@ def check_warm(config: BridgeConfig, *, turn: bool, timeout_s: float = 120.0) ->
                 True, _ready_message(offers_tools, session.mcp_tools_listed, called=False), "",
                 session.mcp_tools_listed, False, (time.monotonic() - t0) * 1000,
             )  # fmt: skip
-        return _tool_turn(quiet, session, offers_tools, t0)
+        return _tool_turn(quiet, session, offers_tools, t0, on_stage)
     finally:
         server.close_all()
         server.shutdown()
         server.server_close()
+        if on_stage:
+            on_stage("done", (time.monotonic() - t0) * 1000)
 
 
-def _tool_turn(config: BridgeConfig, session: Any, offers_tools: bool, t0: float) -> WarmCheck:
+def _tool_turn(
+    config: BridgeConfig,
+    session: Any,
+    offers_tools: bool,
+    t0: float,
+    on_stage: Callable[[str, float], None] | None,
+) -> WarmCheck:
     word = "ready-" + secrets.token_hex(2)
     ask = (
         f"This is a setup check. Call the {CHECK_TOOL} tool once, then reply with only the word it returned."
@@ -112,6 +129,8 @@ def _tool_turn(config: BridgeConfig, session: Any, offers_tools: bool, t0: float
     last: dict[str, Any] = {}
     for event in session.run_turn(format_turn([{"speaker": config.owner, "text": ask}])):
         if event["type"] == "tool_call" and event.get("name") == CHECK_TOOL:
+            if not called and on_stage:
+                on_stage("tool_call", (time.monotonic() - t0) * 1000)
             called = True
             session.resolve_tool(str(event["call_id"]), word, False)
         last = event

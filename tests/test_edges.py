@@ -146,6 +146,7 @@ def test_bench(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     assert code == 0
     assert [row["kind"] for row in rows] == ["cold", "warm_start", "warm"]
     assert all(not row.get("error") for row in rows)
+    assert 0 <= rows[0]["first_line_ms"] <= rows[0]["first_output_ms"] <= rows[0]["total_ms"]
 
 
 def test_sigterm_stops_serve_like_ctrl_c(tmp_path: Path, home: Path) -> None:

@@ -104,7 +104,8 @@ def test_setup_retries_the_warm_check_then_passes(tmp_path: Path, capsys: pytest
     out = capsys.readouterr().out
     assert "Warm mode (ACP): Authentication required" in out
     assert "Fix: Sign in with: agy acp --login" in out
-    assert calls == [{"turn": True}, {"turn": True}]
+    assert len(calls) == 2
+    assert all(call["turn"] is True and callable(call["on_stage"]) for call in calls)
 
 
 def test_setup_warm_check_stops_when_input_ends(tmp_path: Path) -> None:
