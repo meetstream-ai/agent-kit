@@ -30,6 +30,7 @@ MeetStream never sees your agent's login and charges no model tokens.
 ## Contents
 
 - [How it works](#how-it-works)
+- [Before you start](#before-you-start)
 - [Quick start](#quick-start)
 - [Install](#install)
 - [Supported agents](#supported-agents)
@@ -60,6 +61,24 @@ flowchart LR
 
 Your agent can also use the meeting itself through MCP tools: post in the chat,
 share its screen, and more, whatever your MIA agent allows.
+
+## Before you start
+
+The Agent Kit is the third way to give MIA a brain, and not the one to start with:
+
+1. **MeetStream keys** (simplest): MIA uses MeetStream's model providers and MeetStream bills them per hour.
+2. **Your own provider keys**: save your speech-to-text, model and voice keys in the MeetStream dashboard.
+3. **Your own agent on your computer**: this kit.
+
+Pick the Agent Kit only when you want your own agent CLI to answer. Know this first:
+
+> [!WARNING]
+> - **What people say in the meeting reaches an agent that can access your computer.** The work folder,
+>   your agent's tools and, at higher [access levels](#access-levels), edits and shell commands. Keep the
+>   default **Read-only** level unless you trust everyone in the call, and turn on the
+>   [activation code](#activation-code).
+> - **Your computer must stay on for the whole call**, with the bridge and the tunnel running. If it sleeps
+>   or loses its connection, MIA cannot reach your agent.
 
 ## Quick start
 
