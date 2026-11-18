@@ -437,6 +437,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             }
         elif method == "tools/list":
             result = {"tools": session.mcp_tools()}
+            session.mcp_tools_listed = len(result["tools"])
         elif method == "ping":
             result = {}
         elif method == "tools/call":

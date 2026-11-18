@@ -15,6 +15,15 @@ All notable changes to this package. The format follows
 
 ### Changed
 
+- Setup and `doctor` check the warm path meetings use. For ACP agents
+  (Antigravity, Hermes, Copilot, Muse, OpenClaw), meetings run a different
+  command than the one-shot test turn. Setup's test step now also starts the ACP
+  session with the meeting tools (through the stdio shim) and asks the agent to
+  call a harmless test tool, answered as MIA would: "✓ Warm mode (ACP) ready ·
+  meeting tools work", or the real error with its fix, then Test again / Start
+  anyway / Quit. `doctor` runs the handshake and reports the meeting tools the
+  agent loaded, with no model turn (`--no-warm` skips it). `bench` rows name the
+  warm driver; Antigravity's warm turns go through ACP.
 - Setup offers to install a missing agent. It shows the vendor's official
   install command (`npm install -g …` for Claude Code, Codex and Copilot; the
   vendor's own install script for Antigravity, Muse, Hermes and OpenClaw),

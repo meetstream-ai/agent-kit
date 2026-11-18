@@ -80,6 +80,8 @@ class MeetingSession:
         self.activation: ActivationGate | None = None
         self.mcp_secret = secrets.token_urlsafe(24)
         self.started_turns = 0
+        self.mcp_tools_listed: int | None = None
+        """How many meeting tools the agent loaded over MCP (None until it asks)."""
         self.proc: subprocess.Popen[str] | None = None
         self.spawn_ms: float | None = None
         self.ready = threading.Event()

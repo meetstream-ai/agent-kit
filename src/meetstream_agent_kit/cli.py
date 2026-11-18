@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final
 
-from meetstream_agent_kit import __version__, checks, ui
+from meetstream_agent_kit import __version__, checks, ui, warm_check
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
 from meetstream_agent_kit.config import BridgeConfig
@@ -339,6 +339,38 @@ def _check_agent(
             return pick
 
 
+def _check_warm_mode(
+    prompt: Prompter,
+    config: BridgeConfig,
+    *,
+    check: Callable[..., warm_check.WarmCheck] = warm_check.check_warm,
+) -> str:
+    """ACP agents run a different command in meetings: test that one too. "ok", "anyway" or "quit"."""
+    if not warm_check.applies_to(config):
+        return "ok"
+    while True:
+        with ui.spinner(
+            f"Starting {config.agent.label} the way meetings do (ACP) and calling a meeting tool"
+        ):
+            result = check(config, turn=True)
+        if result.ok:
+            ui.ok(f"{result.message} ({result.total_ms / 1000:.1f} s)")
+            return "ok"
+        ui.fail(f"Warm mode (ACP): {result.message}")
+        if result.fix:
+            ui.note(f"Fix: {result.fix}")
+        actions = [
+            ("retry", "Test again"),
+            ("anyway", "Start anyway (meetings may fail or have no meeting tools)"),
+            ("quit", "Quit"),
+        ]
+        pick = actions[prompt.choose("What now?", [label for _, label in actions], 0)][0]
+        if prompt.eof:
+            return "quit"  # input ended: never loop on a default answer
+        if pick != "retry":
+            return pick
+
+
 def _setup_namespace(answers: SetupAnswers) -> argparse.Namespace:
     return argparse.Namespace(
         agent=answers.agent,
@@ -374,7 +406,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     ui.step(SETUP_STEPS, SETUP_STEPS, "Test")
     if getattr(args, "no_test", False):
         ui.note("Skipped (--no-test).")
-    elif _check_agent(prompt, config) == "quit":
+    elif _check_agent(prompt, config) == "quit" or _check_warm_mode(prompt, config) == "quit":
         say(f"Saved your answers. Run `{PROG}` again when the agent is ready.")
         return EXIT_FAILED
     store = PairingStore(home)
@@ -399,6 +431,18 @@ def cmd_setup(args: argparse.Namespace) -> int:
     )
 
 
+def _doctor_config(args: argparse.Namespace, agent: AgentSpec, binary: str) -> BridgeConfig:
+    workdir = Path(args.workdir).expanduser().resolve()
+    return BridgeConfig(
+        agent=agent,
+        binary=binary,
+        workdir=workdir if workdir.is_dir() else Path.home(),
+        owner=args.owner,
+        model=args.model or "",
+        quiet=True,
+    )
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     home = default_home()
     results = [checks.check_python(), checks.check_home(home)]
@@ -416,6 +460,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             ok = status.state in ("ok", "unknown")
             message = f"{agent.label} {status.state}" + (f" ({status.detail})" if status.detail else "")
             results.append(checks.Check("login", ok, message, "" if ok else f"Run: {agent.relogin}"))
+            if ok and agent.warm == "acp" and not args.no_warm:
+                warm = warm_check.check_warm(_doctor_config(args, agent, binary), turn=False)
+                results.append(checks.Check("warm", warm.ok, warm.message, warm.fix))
     try:
         count = len(PairingStore(home).list())
         results.append(
@@ -467,6 +514,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         rows.append(
             {
                 "kind": "warm_start",
+                "driver": config.agent.warm,
                 "spawn_ms": round(session.spawn_ms or 0, 1),
                 "ready_ms": round((time.monotonic() - t0) * 1000, 1),
             }
@@ -576,6 +624,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="check this machine and show how to fix each problem")
     _agent_options(doctor)
     doctor.add_argument("--port", type=int, default=DEFAULT_PORT)
+    doctor.add_argument("--no-warm", action="store_true", help="skip starting the agent's warm (ACP) session")
     doctor.set_defaults(func=cmd_doctor)
 
     bench = sub.add_parser("bench", help="time cold vs warm turns for your agent")

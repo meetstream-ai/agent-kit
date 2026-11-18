@@ -87,7 +87,10 @@ MeetStream reaches your computer, and your name. Then it tests your agent.
   dashboard) keeps one address.
 - **An address you already have**, for example a named Cloudflare tunnel.
 
-The last step runs one short test turn with your agent. If it does not answer,
+The last step runs one short test turn with your agent. For agents that run
+over ACP in meetings (Antigravity, Hermes, Copilot, Muse, OpenClaw) it also
+starts that warm session the way a meeting does and has your agent call a test
+meeting tool, so a problem shows up now and not in the meeting. If it does not answer,
 setup says why (not installed, signed out, timed out, or an empty reply, with
 what the CLI printed), offers to run the sign-in command and tests again. Then
 it asks **Start now?** On yes, it starts the bridge and the tunnel and prints
@@ -262,7 +265,7 @@ MeetStream Agent Kit 0.3.2 doctor
 | `list` | list pairings |
 | `revoke ID` | revoke a pairing; its token stops working at once |
 | `serve [options]` | run the bridge for MIA |
-| `doctor [options]` | check this computer and explain each fix |
+| `doctor [options]` | check this computer and explain each fix; for ACP agents it also starts the warm session and reports the meeting tools it loaded (`--no-warm` skips that) |
 | `bench [options]` | time cold and warm turns for your agent |
 
 `serve`, `doctor` and `bench` take `--agent`, `--command`, `--binary`,
