@@ -4,6 +4,32 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.3] - Unreleased
+
+### Added
+
+- Setup has a **Model** step (now 7 steps). It lists the models your agent CLI
+  really offers, from the CLI itself: the ACP session for Antigravity, Hermes,
+  Copilot, Muse and OpenClaw (the same list meetings use; `agy models` as a
+  fallback), `codex app-server`'s `model/list` for Codex, and the aliases in
+  `claude --help` for Claude Code. The CLI's own setting is preselected
+  (Antigravity's settings.json, Codex's config.toml, Claude Code's
+  settings.json, Hermes's config.yaml). Then the effort, where the CLI has
+  one. Both are saved, shown in the summary, and passed with `--model` and
+  `--effort`; MIA's agent config can still choose another model.
+- In ACP meetings the chosen model is set with `session/set_model` when the
+  agent lists it, and the effort with `session/set_config_option` when the
+  agent offers that thinking level. Before, `agy acp` ran its own current model
+  (gemini-3.8-flash-high), not the one in its settings.
+- **Compare models** (optional in setup, and `bench --compare`): one short real
+  meeting turn per model, the token usage the CLI itself reports, projected to
+  an hour of meeting and drawn as bars, with that turn's time and, where the
+  CLI reports a price (Claude Code, Hermes), the cost per hour. The assumption
+  is printed with it (20 answered turns an hour, one warm session, each turn
+  adding the meeting text and the answer to the context; `--turns-per-hour`
+  changes it). Without a price it says "plan usage, no per-token bill".
+- Hermes `provider:model` ids go to `--provider` and `-m`.
+
 ## [0.3.2] - Unreleased
 
 ### Fixed

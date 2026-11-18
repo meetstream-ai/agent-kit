@@ -14,6 +14,7 @@ import argparse
 import errno
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -26,10 +27,12 @@ from typing import Final
 from meetstream_agent_kit import __version__, checks, ui, warm_check
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
+from meetstream_agent_kit.compare import chart_lines, compare
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import DEFAULT_PORT, DEFAULT_TURN_TIMEOUT_S
 from meetstream_agent_kit.login import LoginChecker
+from meetstream_agent_kit.models import catalog_for
 from meetstream_agent_kit.oneshot import RunResult, build_oneshot_argv, run_once
 from meetstream_agent_kit.pairing import PairingError, PairingStore, default_home
 from meetstream_agent_kit.prompts import format_turn, system_prompt
@@ -45,6 +48,7 @@ from meetstream_agent_kit.setup import (
     save_answers,
 )
 from meetstream_agent_kit.tunnel import TUNNEL_KINDS, Tunnel, TunnelError, TunnelSpec, make_spec
+from meetstream_agent_kit.usage import Assumptions
 
 PROG: Final = "meetstream-agent-kit"
 TAGLINE: Final = "Your own agent, live in your MeetStream meetings."
@@ -198,6 +202,8 @@ def _print_running(
             ("agent", f"{agent.label} ({mode})"),
             ("folder", ui.short_path(str(config.workdir))),
             ("access", config.max_access),
+            ("model", config.model or "the CLI's default"),
+            ("effort", config.effort or "the CLI's default"),
             ("address", f"http://127.0.0.1:{port}"),
             ("login", login),
         ],
@@ -380,8 +386,8 @@ def _setup_namespace(answers: SetupAnswers) -> argparse.Namespace:
         workdir=answers.workdir,
         owner=answers.owner or "the user",
         timeout=DEFAULT_TURN_TIMEOUT_S,
-        model=None,
-        effort=None,
+        model=answers.model or None,
+        effort=answers.effort or None,
         no_prime=False,
     )
 
@@ -482,8 +488,31 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_FAILED if failed else EXIT_OK
 
 
+def cmd_bench_compare(args: argparse.Namespace) -> int:
+    """Token use per model, one short real turn each, projected to an hour of meeting."""
+    config = _build_config(args)
+    models = [m.strip() for m in (args.models or "").split(",") if m.strip()]
+    if not models:
+        with ui.spinner(f"Asking {config.agent.label} which models it offers"):
+            listed = catalog_for(config.agent, config.binary)
+        default = config.model or listed.default_model
+        ids = [m.id for m in listed.models]
+        models = ([default] if default else []) + [m for m in ids if m != default]
+        models = models[: args.max_models] or [""]
+    names = ", ".join(m or "default" for m in models)
+    say(f"Comparing {len(models)} model(s) of {config.agent.label}: {names}")
+    results = compare(config, models, config.effort)
+    assumptions = Assumptions(turns_per_hour=args.turns_per_hour)
+    say("")
+    for line in chart_lines(results, assumptions, selected=config.model):
+        say(line)
+    return EXIT_OK if any(r.usage for r in results) else EXIT_FAILED
+
+
 def cmd_bench(args: argparse.Namespace) -> int:
     """Cold (one process per turn) vs warm (one long-lived session) timings."""
+    if getattr(args, "compare", False):
+        return cmd_bench_compare(args)
     config = _build_config(args)
     turn = format_turn([{"speaker": args.owner, "text": args.request}])
     rows: list[dict[str, object]] = []
@@ -546,6 +575,12 @@ def cmd_mcp_stdio(args: argparse.Namespace) -> int:
 # ── Parser ────────────────────────────────────────────────────────────────────
 
 
+def _effort_level(value: str) -> str:
+    if not re.fullmatch(r"[a-z]{2,12}", value):
+        raise argparse.ArgumentTypeError(f"{value!r} is not an effort level (for example: low, medium, high)")
+    return value
+
+
 def _agent_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--agent", default="claude", help=f"agent CLI: {', '.join(sorted(AGENTS))} (default: claude)"
@@ -571,8 +606,8 @@ def _agent_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--effort",
-        choices=["minimal", "low", "medium", "high"],
-        help="reasoning effort, where the CLI supports it",
+        type=_effort_level,
+        help="reasoning effort, where the CLI supports it (for example low, medium, high, xhigh, max)",
     )
 
 
@@ -642,6 +677,18 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_options(bench)
     bench.add_argument("request", nargs="?", default="Reply with one short sentence: what is 2 + 2?")
     bench.add_argument("--repeat", type=int, default=3)
+    bench.add_argument(
+        "--compare",
+        action="store_true",
+        help="compare models by estimated tokens per hour of meeting (one short real turn each), as a chart",
+    )
+    bench.add_argument("--models", help="with --compare: comma-separated model ids (default: the CLI's list)")
+    bench.add_argument(
+        "--max-models", type=int, default=4, help="with --compare: at most this many (default 4)"
+    )
+    bench.add_argument(
+        "--turns-per-hour", type=int, default=20, help="with --compare: answered turns per hour (default 20)"
+    )
     bench.set_defaults(func=cmd_bench)
 
     shim = sub.add_parser("mcp-stdio", help=argparse.SUPPRESS)

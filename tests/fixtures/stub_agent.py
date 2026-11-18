@@ -95,7 +95,18 @@ def answer_turn(text):
         if "LONGSTREAM" in text:
             time.sleep(0.03)
     time.sleep(max(0.0, total - first))
-    emit({"type": "result", "is_error": False, "result": answer})
+    result = {"type": "result", "is_error": False, "result": answer}
+    if os.environ.get("STUB_USAGE") == "1":  # Claude Code's real field names
+        model = arg_value("--model") or "default"
+        result["usage"] = {
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 9000,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 10 * len(model),
+            "output_tokens_details": {"thinking_tokens": 5},
+        }
+        result["total_cost_usd"] = 0.01 * len(model)
+    emit(result)
 
 
 def _rpc_loop(handle):
@@ -197,7 +208,28 @@ def _acp(msg, pending):
         _acp.mcp = params.get("mcpServers") or []
         if os.environ.get("STUB_MCP_AT_START") == "1":
             list_stdio_mcp_tools()
-        emit({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "sess_1"}})
+        created = {"sessionId": "sess_1"}
+        if os.environ.get("STUB_ACP_MODELS") == "1":  # the shape `agy acp` returns (2026-11-18)
+            created["models"] = {
+                "availableModels": [
+                    {"modelId": "flash-low", "name": "Flash (Low)"},
+                    {"modelId": "flash-high", "name": "Flash (High)"},
+                ],
+                "currentModelId": "flash-high",
+            }
+            created["configOptions"] = [
+                {
+                    "id": "thought_level",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": "high",
+                    "options": [{"value": v, "name": v.title()} for v in ("low", "medium", "high")],
+                }
+            ]
+        emit({"jsonrpc": "2.0", "id": mid, "result": created})
+    elif method == "session/set_config_option":
+        _acp.effort = params.get("value")
+        emit({"jsonrpc": "2.0", "id": mid, "result": {}})
     elif method == "session/set_model":
         _acp.model = params.get("modelId")
         emit({"jsonrpc": "2.0", "id": mid, "result": {}})
@@ -215,6 +247,8 @@ def _acp(msg, pending):
             answer = "Tool said: " + call_stdio_mcp_tool(tool.group(1))
         if "MODEL?" in text:
             answer = f"model {_acp.model}"
+        if "EFFORT?" in text:
+            answer = f"effort {_acp.effort}"
         if "PERMISSION" in text:
             ask_id = 9001
             box = queue.Queue()
@@ -269,6 +303,7 @@ def _acp(msg, pending):
 _acp.cancelled = False
 _acp.mcp = []
 _acp.model = None
+_acp.effort = None
 
 
 def _app_server(msg, pending):

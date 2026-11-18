@@ -73,10 +73,12 @@ uv tool install meetstream-agent-kit
 meetstream-agent-kit
 ```
 
-It walks you through six short steps, with arrow-key menus: which agent should
+It walks you through seven short steps, with arrow-key menus: which agent should
 answer (it lists the ones it finds on your computer and checks they are signed
 in; pick one that is missing and it shows the vendor's official install command
-and offers to run it), the folder it works in, the most access this computer allows, how
+and offers to run it), which model and effort it uses (listed by the CLI itself,
+with an optional comparison of estimated tokens per hour of meeting), the folder
+it works in, the most access this computer allows, how
 MeetStream reaches your computer, and your name. Then it tests your agent.
 
 - **Cloudflare quick tunnel:** no account needed. The address changes each time it starts.
@@ -234,7 +236,7 @@ Found a problem? See [SECURITY.md](SECURITY.md).
 
 ```text
 $ meetstream-agent-kit doctor --agent claude
-MeetStream Agent Kit 0.3.2 doctor
+MeetStream Agent Kit 0.3.3 doctor
   ✓ python: Python 3.12.8
   ✓ config: /Users/you/.config/meetstream-agent-kit
   ✓ workdir: /Users/you/code/my-project
@@ -267,7 +269,7 @@ MeetStream Agent Kit 0.3.2 doctor
 | `revoke ID` | revoke a pairing; its token stops working at once |
 | `serve [options]` | run the bridge for MIA |
 | `doctor [options]` | check this computer and explain each fix; for ACP agents it also starts the warm session and reports the meeting tools it loaded (`--no-warm` skips that) |
-| `bench [options]` | time cold and warm turns for your agent |
+| `bench [options]` | time cold and warm turns for your agent; `--compare` charts estimated tokens (and cost, where the CLI reports one) per hour of meeting for each model (`--models a,b`, `--turns-per-hour N`) |
 
 `serve`, `doctor` and `bench` take `--agent`, `--command`, `--binary`,
 `--workdir`, `--owner`, `--model`, `--effort` and `--timeout`. `serve` also

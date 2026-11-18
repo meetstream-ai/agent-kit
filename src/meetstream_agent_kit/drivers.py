@@ -331,6 +331,8 @@ class AcpDriver(_JsonRpcDriver):
     def __init__(self, session: MeetingSession) -> None:
         super().__init__(session)
         self.acp_session_id: str | None = None
+        self.session_info: dict[str, Any] = {}
+        """What ``session/new`` returned (models, modes, config options)."""
         self._prompt_id: int | None = None
 
     def argv(self, resume: bool) -> list[str]:
@@ -372,13 +374,42 @@ class AcpDriver(_JsonRpcDriver):
             servers = [self.mcp_server(init.get("agentCapabilities") or {})] if offer_mcp else []
             created = self.request("session/new", {"cwd": str(session.config.workdir), "mcpServers": servers})
             self.acp_session_id = str(created.get("sessionId") or "")
-            if session.model and session.config.agent.acp_set_model:
+            self.session_info = created
+            advertised = {
+                str(m.get("modelId"))
+                for m in _as_dict(created.get("models")).get("availableModels") or []
+                if isinstance(m, dict)
+            }
+            if session.model and (session.config.agent.acp_set_model or session.model in advertised):
                 self._set_model(session.model)
+            if session.config.effort:
+                self._set_thought_level(created, session.config.effort)
             session.ready.set()
         except Exception as exc:
             self.acp_session_id = None
             session.emit("error", f"ACP start failed: {exc}")
             session.end_turn()
+
+    def _set_thought_level(self, created: dict[str, Any], effort: str) -> None:
+        """The effort as the session's ``thought_level`` option, when the agent offers one with that value."""
+        for option in created.get("configOptions") or []:
+            if not isinstance(option, dict) or option.get("category") != "thought_level":
+                continue
+            values = {str(o.get("value")) for o in option.get("options") or [] if isinstance(o, dict)}
+            if effort not in values:
+                self.session.log(
+                    f"effort {effort!r} is not offered here ({', '.join(sorted(values))}); kept its own"
+                )
+                return
+            try:
+                self.request(
+                    "session/set_config_option",
+                    {"sessionId": self.acp_session_id, "configId": option.get("id"), "value": effort},
+                    15.0,
+                )
+            except (RuntimeError, TimeoutError) as exc:
+                self.session.log(f"effort {effort!r} not set ({exc}); the agent's own level answers")
+            return
 
     def _set_model(self, model: str) -> None:
         """Ask for MIA's model; an agent that cannot switch keeps its own and the meeting goes on."""
