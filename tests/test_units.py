@@ -157,11 +157,14 @@ def test_parsers_and_error_classes() -> None:
     assert parse_claude("not json") == (None, None, None)
     message = {"type": "item.completed", "item": {"type": "agent_message", "text": "Codex"}}
     assert parse_codex(json.dumps(message)).delta == "Codex"
-    step = {"type": "step_update", "step_update": {"step_type": "agent_response", "text_delta": "a"}}
+    # Real agy lines name their kind in "event"; "type" is still read for older builds.
+    step = {"event": "step_update", "step_update": {"step_type": "agent_response", "text_delta": "a"}}
     assert parse_agy(json.dumps(step)).delta == "a"
     assert (
-        parse_agy(json.dumps({"type": "result", "result": {"status": "failed", "error": "x"}})).error == "x"
+        parse_agy(json.dumps({"event": "result", "result": {"status": "failed", "error": "x"}})).error == "x"
     )
+    legacy = {"type": "step_update", "step_update": {"step_type": "agent_response", "text_delta": "b"}}
+    assert parse_agy(json.dumps(legacy)).delta == "b"
     assert classify_error("Failed to authenticate: OAuth token has expired") == "auth_required"
     assert classify_error("Login expired · Please run /login") == "auth_required"
     assert classify_error("rate limited") == "agent_error"

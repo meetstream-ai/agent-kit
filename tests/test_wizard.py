@@ -16,7 +16,7 @@ from meetstream_agent_kit import checks, ui
 from meetstream_agent_kit.agents import AGENTS
 from meetstream_agent_kit.cli import _check_agent
 from meetstream_agent_kit.config import BridgeConfig
-from meetstream_agent_kit.oneshot import RunResult
+from meetstream_agent_kit.oneshot import RunResult, build_oneshot_argv, run_once
 from meetstream_agent_kit.parsers import parse_agy
 from meetstream_agent_kit.setup import Prompter, SetupAbortedError, ask_setup
 from meetstream_agent_kit.tunnel import (
@@ -54,6 +54,63 @@ def test_agy_documented_stream_json_is_read() -> None:
     cancelled = {"event": "result", "result": {"status": "CANCELED", "error": "stopped"}}
     assert parse_agy(json.dumps(cancelled)).error == "stopped"
     assert parse_agy(json.dumps({"event": "init", "init": {}})).delta is None
+
+
+# The sequence a signed-in `agy -p "say hi" --output-format stream-json` printed on Nav's Mac
+# (2026-11-18): init, the user's step, the streamed answer, the answer's DONE, then the result.
+AGY_REPLAY = [
+    {"event": "init", "conversation_id": "c1", "init": {"cwd": "/w", "permission_mode": "request-review"}},
+    {
+        "event": "step_update",
+        "step_update": {"conversation_id": "c1", "step_index": 0, "state": "DONE", "step_type": "user_input"},
+    },
+    {
+        "event": "step_update",
+        "step_update": {
+            "conversation_id": "c1",
+            "step_index": 1,
+            "state": "ACTIVE",
+            "step_type": "agent_response",
+            "text_delta": "Hi! How can I help you today?",
+        },
+    },
+    {
+        "event": "step_update",
+        "step_update": {
+            "conversation_id": "c1",
+            "step_index": 1,
+            "state": "DONE",
+            "step_type": "agent_response",
+        },
+    },
+    {
+        "event": "result",
+        "result": {
+            "conversation_id": "c1",
+            "status": "SUCCESS",
+            "response": "Hi! How can I help you today?",
+            "duration_seconds": 3.1,
+            "num_turns": 1,
+            "usage": {"input_tokens": 9464, "output_tokens": 66},
+        },
+    },
+]
+
+
+def test_agy_replay_through_the_real_test_turn(tmp_path: Path) -> None:
+    """Regression: the setup test turn said "empty reply" for a signed-in agy (MS-2268)."""
+    fake = tmp_path / "agy"
+    lines = "\n".join(json.dumps(event) for event in AGY_REPLAY)
+    fake.write_text(f"#!/bin/sh\ncat <<'EOF'\n{lines}\nEOF\n", encoding="utf-8")
+    fake.chmod(0o755)
+    agent = AGENTS["agy"]
+    argv, stdin_text = build_oneshot_argv(agent, "say hi", "readonly", str(fake))
+    assert argv[1:3] == ["-p", "say hi"]
+    result = run_once(agent, argv, stdin_text, str(tmp_path), 30)
+    assert result.error is None
+    assert result.answer == "Hi! How can I help you today?"
+    assert result.deltas == ["Hi! How can I help you today?"]
+    assert checks.diagnose_turn(agent, result.answer, result.error, result.stderr_tail) is None
 
 
 # ── Why the test turn failed ──────────────────────────────────────────────────
