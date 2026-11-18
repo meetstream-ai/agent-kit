@@ -97,7 +97,13 @@ class BridgeServer(ThreadingHTTPServer):
             if old is not None and old.config_key() == new.config_key():
                 return old, True
             if activation_required:
-                new.activation = ActivationGate(self.config.agent.label, session_id)
+                # The activation belongs to the meeting, not to one agent process:
+                # a restart for a changed setup keeps the owner who already pasted the code.
+                kept = old.activation if old is not None else None
+                new.activation = kept or ActivationGate(self.config.agent.label, session_id)
+            if old is not None and not self.config.quiet:
+                changed = ", ".join(old.changed_fields(new)) or "setup"
+                say(f"[session] {session_id}: restarting the agent: {changed} changed")
             self.sessions[session_id] = new
         if old is not None:
             old.close()
@@ -115,6 +121,24 @@ class BridgeServer(ThreadingHTTPServer):
     def close_all(self) -> None:
         for session_id in list(self.sessions):
             self.end_session(session_id)
+
+
+_IMAGE_RESULT_RE: Final = re.compile(r"MIA_IMAGE (image/(?:jpeg|png|webp)) ([A-Za-z0-9+/]+={0,2})")
+
+
+def mcp_tool_content(output: str) -> list[dict[str, Any]]:
+    """A meeting tool's result as MCP content.
+
+    MIA's screen "look" tools return the screenshot itself
+    (``MIA_IMAGE <mime> <base64>``) so the agent can see it.
+    """
+    match = _IMAGE_RESULT_RE.fullmatch(output or "")
+    if match:
+        return [
+            {"type": "image", "data": match.group(2), "mimeType": match.group(1)},
+            {"type": "text", "text": "Screenshot of the meeting screen."},
+        ]
+    return [{"type": "text", "text": output}]
 
 
 def valid_tools(raw: Any) -> list[dict[str, Any]]:
@@ -373,11 +397,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         session = self._session(body)
         if session is None:
             return
-        ok = session.resolve_tool(
-            str(body.get("call_id") or ""),
-            str(body.get("output") or "")[:MAX_ANSWER_CHARS],
-            bool(body.get("is_error")),
-        )
+        output = str(body.get("output") or "")
+        if not _IMAGE_RESULT_RE.fullmatch(output):  # screenshots pass whole; text is capped
+            output = output[:MAX_ANSWER_CHARS]
+        ok = session.resolve_tool(str(body.get("call_id") or ""), output, bool(body.get("is_error")))
         self._json(200 if ok else 404, {"ok": ok})
 
     def _cancel(self, body: Body) -> None:
@@ -424,7 +447,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 result = self._approve(args)
             elif name in session.tool_names():
                 output, is_error = session.call_tool(name, args)
-                result = {"content": [{"type": "text", "text": output}], "isError": is_error}
+                result = {"content": mcp_tool_content(output), "isError": is_error}
             else:
                 result = {"content": [{"type": "text", "text": f"unknown tool {name}"}], "isError": True}
         else:

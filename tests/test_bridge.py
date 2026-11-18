@@ -491,3 +491,44 @@ def test_mcp_stdio_shim_refuses_other_hosts() -> None:
         check=False,
     )
     assert proc.returncode == 2
+
+
+def test_activation_survives_an_agent_restart_in_the_same_meeting(bridge: Bridge) -> None:
+    """Live 11-17: MIA re-sent session/start with new instructions after the first
+    answer; the restart showed a new code and locked the owner out."""
+    bridge.post("/v1/session/start", {"session_id": "bot1", "instructions": "A", "claim_required": True})
+    gate = bridge.sessions["bot1"].activation
+    assert gate is not None
+    claim = {"session_id": "bot1", "code": gate._code, "participant_id": "dev-1", "name": "Nav"}
+    bridge.post("/v1/claim", claim)
+    restart = {"session_id": "bot1", "instructions": "A plus a new suffix", "claim_required": True}
+    status, body = bridge.post("/v1/session/start", restart)
+    assert status == 200
+    assert body["reused"] is False
+    assert body["claim"] == "claimed"
+    assert bridge.sessions["bot1"].activation is gate
+    status, events = bridge.post("/v1/turn", TURN, stream=True)
+    assert status == 200
+    assert events[-1]["type"] == "done"
+
+
+def test_screenshots_reach_the_agent_as_mcp_images(bridge: Bridge) -> None:
+    from meetstream_agent_kit.server import mcp_tool_content
+    from meetstream_agent_kit.session import _ToolWaiter
+
+    image = "iVBORw0KGgo" + "A" * 300_000 + "=="  # bigger than any text result
+    assert mcp_tool_content(f"MIA_IMAGE image/png {image}")[0] == {
+        "type": "image",
+        "data": image,
+        "mimeType": "image/png",
+    }
+    assert mcp_tool_content("Shared https://x")[0] == {"type": "text", "text": "Shared https://x"}
+    assert mcp_tool_content("MIA_IMAGE image/svg+xml abc")[0]["type"] == "text"  # only real image types
+    bridge.post("/v1/session/start", {"session_id": "bot1", "tools": TOOLS})
+    session = bridge.sessions["bot1"]
+    waiter = _ToolWaiter()
+    session._pending["call_1"] = waiter
+    result = {"session_id": "bot1", "call_id": "call_1", "output": f"MIA_IMAGE image/png {image}"}
+    assert bridge.post("/v1/tool_result", result)[0] == 200
+    assert len(waiter.output) > 300_000  # kept whole; text results are capped
+    assert waiter.output.endswith(image[-50:])

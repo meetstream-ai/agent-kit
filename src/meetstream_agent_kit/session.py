@@ -111,6 +111,17 @@ class MeetingSession:
     def rules(self) -> str:
         return system_prompt(self.config.owner, self.instructions)
 
+    def changed_fields(self, other: MeetingSession) -> list[str]:
+        """Which parts of the meeting's setup differ from ``other`` (for the restart log line)."""
+        pairs = (
+            ("instructions", self.instructions, other.instructions),
+            ("tools", self.tools, other.tools),
+            ("model", self.model, other.model),
+            ("access", self.access, other.access),
+            ("activation", self.activation_required, other.activation_required),
+        )
+        return [name for name, mine, theirs in pairs if mine != theirs]
+
     def config_key(self) -> str:
         """Changes when anything that shapes the agent process changes."""
         key = [self.instructions, self.tools, self.model, self.access, self.activation_required]

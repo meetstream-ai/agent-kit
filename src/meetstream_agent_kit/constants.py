@@ -20,7 +20,8 @@ STOP_GRACE_S: Final = 2.0
 LOGIN_CACHE_S: Final = 30.0
 """A login check result is reused for this long."""
 
-MAX_BODY_BYTES: Final = 256 * 1024
+MAX_BODY_BYTES: Final = 4 * 1024 * 1024
+"""Largest request body; screenshots from MIA's screen tools need the room (checked after auth)."""
 MAX_FIELD_CHARS: Final = 4000
 MAX_INSTRUCTIONS_CHARS: Final = 40_000
 MAX_ANSWER_CHARS: Final = 20_000

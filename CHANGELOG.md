@@ -19,6 +19,8 @@ First public release, as the `meetstream-agent-kit` package.
   instead of as an expired login.
 - A single-file `.pyz` build for each release, with SHA-256 checksums and
   build provenance.
+- Screenshots from MIA's screen tools reach the agent as MCP images, kept
+  whole (text results stay capped). Requests can be up to 4 MiB.
 
 ### Changed
 
@@ -30,6 +32,12 @@ First public release, as the `meetstream-agent-kit` package.
 - Settings live in `~/.config/meetstream-agent-kit`. Pairings from the
   pre-release bridge keep working and move there on the next change.
 - New tokens start with `msak_`; older tokens still work.
+
+### Fixed
+
+- The activation code belongs to the meeting: when MIA restarts the agent
+  with a changed setup, the owner who already pasted the code stays
+  activated. The bridge logs what changed.
 
 ## [0.2.0] - pre-release
 
