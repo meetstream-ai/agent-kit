@@ -1,7 +1,9 @@
 """The ``meetstream-agent-kit`` command.
 
+(no command)                       guided setup in a terminal: questions, then start
+``setup``                          the same, on purpose
 ``pair`` / ``list`` / ``revoke``   manage pairing tokens
-``serve``                          run the bridge for MIA
+``serve``                          run the bridge for MIA (``--tunnel`` opens the tunnel too)
 ``doctor``                         check this machine and explain each fix
 ``bench``                          time cold vs warm turns for your agent
 """
@@ -12,7 +14,9 @@ import argparse
 import errno
 import json
 import os
+import signal
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -30,6 +34,8 @@ from meetstream_agent_kit.pairing import PairingError, PairingStore, default_hom
 from meetstream_agent_kit.prompts import format_turn, system_prompt
 from meetstream_agent_kit.server import BridgeServer
 from meetstream_agent_kit.session import MeetingSession
+from meetstream_agent_kit.setup import Prompter, SetupAnswers, ask_setup, load_answers, save_answers
+from meetstream_agent_kit.tunnel import TUNNEL_KINDS, Tunnel, TunnelError, TunnelSpec, make_spec
 
 PROG: Final = "meetstream-agent-kit"
 EXIT_OK: Final = 0
@@ -139,46 +145,183 @@ def cmd_revoke(args: argparse.Namespace) -> int:
     return EXIT_FAILED
 
 
+def _tunnel_spec(args: argparse.Namespace) -> TunnelSpec:
+    kind = getattr(args, "tunnel", "none") or "none"
+    url = getattr(args, "tunnel_url", "") or ""
+    try:
+        return make_spec(kind, url)
+    except TunnelError as exc:
+        raise CliError(str(exc), "Use --tunnel url --tunnel-url https://your-address") from exc
+
+
+def _interrupt(_signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt
+
+
+def _stop_on_signals() -> None:
+    """kill / a closed terminal stop the bridge like Ctrl-C, so the tunnel and lock file go with it."""
+    for name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            signal.signal(sig, _interrupt)
+
+
+def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: str = "") -> int:
+    """Start the bridge (and its tunnel), print what to paste in the dashboard, serve until Ctrl-C."""
+    home = default_home()
+    try:
+        server = BridgeServer(("127.0.0.1", port), config)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            _fail_on(checks.port_in_use_message(home, port))
+        raise CliError(f"cannot listen on 127.0.0.1:{port}: {exc.strerror}") from exc
+    lock = checks.write_lock(home, server.port)
+    _stop_on_signals()
+    runner = threading.Thread(target=server.serve_forever, daemon=True, name="bridge")
+    runner.start()
+    tun = Tunnel(tunnel, server.port)
+    try:
+        if tunnel.kind != "none":
+            say(f"Opening the tunnel ({tunnel.kind})...")
+        public_url = tun.start()
+        login = server.login.check(force=True)
+        agent = config.agent
+        mode = "warm session per meeting" if agent.warm else "one run per turn"
+        say(f"\nMeetStream Agent Kit {__version__}: {agent.label} ({mode}), max access {config.max_access}")
+        say(f"  folder:  {config.workdir}")
+        say(f"  address: http://127.0.0.1:{server.port}")
+        say(
+            f"  login:   {login.state}"
+            + (f" ({login.detail})" if login.detail and login.state != "ok" else "")
+        )
+        if login.state == "expired":
+            say(f"           sign in again with: {agent.relogin}")
+        if config.max_access == "full":
+            say(
+                "  FULL access: the agent may run shell commands and change files without asking, but only in"
+            )
+            say(
+                "  meetings where only you (by verified id or activation code) can talk to it;"
+                " otherwise it asks."
+            )
+        if agent.warm is None:
+            say("  note: a custom command runs with your own permissions; the bridge cannot limit it.")
+        say("")
+        if token or public_url:
+            say("Paste these in the MeetStream dashboard:")
+        if token:
+            say(f"  Pairing token  (Integrations > Models > Local agent, shown once):  {token}")
+        if public_url:
+            say(f"  Bridge URL     (Agents > your agent > Model > Your agent):          {public_url}")
+            if tunnel.kind == "cloudflare" or (tunnel.kind == "ngrok" and not tunnel.url):
+                say("  This address changes each time the tunnel starts; update the Bridge URL when it does.")
+        else:
+            say(
+                f"Point your tunnel at it, for example:  cloudflared tunnel --url http://127.0.0.1:{server.port}"
+            )
+        say(
+            "\nRunning. Leave this window open; Ctrl-C stops the bridge"
+            + (" and the tunnel." if public_url and tunnel.kind != "url" else ".")
+        )
+        while runner.is_alive():
+            runner.join(0.5)
+    except KeyboardInterrupt:
+        say("\nstopped")
+    except TunnelError as exc:
+        raise CliError(f"tunnel: {exc}") from exc
+    finally:
+        tun.stop()
+        server.shutdown()
+        server.close_all()
+        server.server_close()
+        lock.unlink(missing_ok=True)
+    return EXIT_OK
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     home = default_home()
     _fail_on(checks.check_python())
     _fail_on(checks.check_home(home))
     config = _build_config(args, max_access=args.max_access)
     if not PairingStore(home).list():
-        raise CliError("no pairing yet", f"Run: {PROG} pair --agent {config.agent.name}")
-    try:
-        server = BridgeServer(("127.0.0.1", args.port), config)
-    except OSError as exc:
-        if exc.errno == errno.EADDRINUSE:
-            _fail_on(checks.port_in_use_message(home, args.port))
-        raise CliError(f"cannot listen on 127.0.0.1:{args.port}: {exc.strerror}") from exc
-    lock = checks.write_lock(home, server.port)
-    login = server.login.check(force=True)
-    agent = config.agent
-    mode = "warm session per meeting" if agent.warm else "one run per turn"
-    say(f"MeetStream Agent Kit {__version__}: {agent.label} ({mode}), max access {config.max_access}")
-    say(f"  folder:  {config.workdir}")
-    say(f"  address: http://127.0.0.1:{server.port}")
-    say(f"  login:   {login.state}" + (f" ({login.detail})" if login.detail and login.state != "ok" else ""))
-    if login.state == "expired":
-        say(f"           sign in again with: {agent.relogin}")
-    if config.max_access == "full":
-        say("  FULL access: the agent may run shell commands and change files without asking, but only in")
+        raise CliError("no pairing yet", f"Run: {PROG} pair --agent {config.agent.name}  (or just: {PROG})")
+    return _run_bridge(config, args.port, _tunnel_spec(args))
+
+
+def _test_turn(config: BridgeConfig) -> bool:
+    """One read-only turn, so a broken login or CLI shows up now and not in the meeting."""
+    say(f"\nTesting {config.agent.label} with one short turn...")
+    turn = format_turn([{"speaker": config.owner, "text": "Reply with the single word: ready"}])
+    argv, stdin_text = build_oneshot_argv(
+        config.agent,
+        system_prompt(config.owner, "") + "\n\n" + turn,
+        "readonly",
+        config.binary,
+        config.model,
+        config.effort,
+    )
+    result = run_once(config.agent, argv, stdin_text, str(config.workdir), min(config.timeout_s, 120.0))
+    if result.error or not result.answer.strip():
+        say(f"  It did not answer: {result.error or 'empty reply'}")
+        if config.agent.relogin:
+            say(f"  If it is signed out, run: {config.agent.relogin}")
+        return False
+    say(f"  It answered in {result.total_ms / 1000:.1f} s: {result.answer.strip()[:80]}")
+    return True
+
+
+def _setup_namespace(answers: SetupAnswers) -> argparse.Namespace:
+    return argparse.Namespace(
+        agent=answers.agent,
+        command=answers.command or None,
+        binary=None,
+        workdir=answers.workdir,
+        owner=answers.owner or "the user",
+        timeout=DEFAULT_TURN_TIMEOUT_S,
+        model=None,
+        effort=None,
+        no_prime=False,
+    )
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Questions first, then one 'Start now?'; on yes the bridge and tunnel run and print what to paste."""
+    home = default_home()
+    _fail_on(checks.check_python())
+    _fail_on(checks.check_home(home))
+    prompt = Prompter()
+    last = load_answers(home)
+    say(f"MeetStream Agent Kit {__version__}: your own agent, live in MeetStream meetings.")
+    answers: SetupAnswers | None = None
+    if last and prompt.confirm(f"\nLast setup: {last.describe()}.\nStart with it?"):
+        answers = last
+    if answers is None:
+        answers = ask_setup(prompt, last)
+        save_answers(home, answers)
+    config = _build_config(_setup_namespace(answers), max_access=answers.max_access)
+    tested = getattr(args, "no_test", False) or _test_turn(config)
+    if not tested and not prompt.confirm("Start anyway?", default=False):
+        return EXIT_FAILED
+    store = PairingStore(home)
+    token = ""
+    pairings = store.list()
+    keep = bool(pairings) and prompt.confirm(
+        f"\nKeep using your pairing {pairings[-1].id} ({pairings[-1].label}), already saved in the dashboard?"
+    )
+    if not keep:
+        _pairing, token = store.create("custom agent" if answers.command else answers.agent)
+    if not prompt.confirm("\nStart now?"):
         say(
-            "  meetings where only you (by verified id or activation code) can talk to it; otherwise it asks."
+            f"Saved. Run `{PROG}` any time to start."
+            + (f"\nYour new pairing token (shown once): {token}" if token else "")
         )
-    if agent.warm is None:
-        say("  note: a custom command runs with your own permissions; the bridge cannot limit it.")
-    say(f"Point your tunnel at it, for example:  cloudflared tunnel --url http://127.0.0.1:{server.port}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        say("\nstopped")
-    finally:
-        server.close_all()
-        server.server_close()
-        lock.unlink(missing_ok=True)
-    return EXIT_OK
+        return EXIT_OK
+    return _run_bridge(
+        config,
+        getattr(args, "port", DEFAULT_PORT),
+        make_spec(answers.tunnel, answers.tunnel_url),
+        token=token,
+    )
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -310,7 +453,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Your own agent CLI, live in your meetings through MeetStream MIA.",
     )
     parser.add_argument("--version", action="version", version=f"{PROG} {__version__}")
-    sub = parser.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
+    sub = parser.add_subparsers(dest="cmd", metavar="COMMAND")
+
+    setup = sub.add_parser("setup", help="guided setup: a few questions, then start (also: no command)")
+    setup.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"local port (default: {DEFAULT_PORT})")
+    setup.add_argument("--no-test", action="store_true", help="skip the test turn")
+    setup.set_defaults(func=cmd_setup)
 
     pair = sub.add_parser("pair", help="create a pairing token (shown once)")
     pair.add_argument("--label", default="my computer", help="a name for this pairing")
@@ -336,6 +484,18 @@ def build_parser() -> argparse.ArgumentParser:
         "shell or file action) or full (no prompts). MIA's agent config can only lower it",
     )
     serve.add_argument("--no-prime", action="store_true", help="skip the warm-up turn at meeting start")
+    serve.add_argument(
+        "--tunnel",
+        choices=list(TUNNEL_KINDS),
+        default="none",
+        help="open a tunnel too and print its https address: cloudflare (quick tunnel, no account), "
+        "ngrok (needs an ngrok account), url (an address you already have), none (default)",
+    )
+    serve.add_argument(
+        "--tunnel-url",
+        default="",
+        help="with --tunnel ngrok: your static domain; with --tunnel url: your https address",
+    )
     serve.set_defaults(func=cmd_serve)
 
     doctor = sub.add_parser("doctor", help="check this machine and show how to fix each problem")
@@ -356,7 +516,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if getattr(args, "func", None) is None:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            args = parser.parse_args(["setup"])
+        else:
+            parser.print_help()
+            return EXIT_FAILED
     try:
         return int(args.func(args))
     except CliError as exc:

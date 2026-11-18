@@ -43,10 +43,10 @@ def test_serve_runs_answers_and_stops_cleanly(tmp_path: Path, home: Path) -> Non
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/v1/health", headers={"Authorization": f"Bearer {token}"}
         )
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 60  # first start on a cold macOS CI runner is slow
         while True:
             try:
-                with urllib.request.urlopen(request, timeout=2) as response:
+                with urllib.request.urlopen(request, timeout=10) as response:
                     health = json.loads(response.read())
                 break
             except (urllib.error.URLError, ConnectionError):
@@ -57,7 +57,12 @@ def test_serve_runs_answers_and_stops_cleanly(tmp_path: Path, home: Path) -> Non
         assert (home / "run" / f"serve-{port}.json").exists()
     finally:
         proc.send_signal(signal.SIGINT)
-        out, _ = proc.communicate(timeout=15)
+        try:
+            out, _ = proc.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()  # never leave serve running for the next test
+            out, _ = proc.communicate()
+            raise
     assert proc.returncode == 0, out
     assert "address: http://127.0.0.1:" in out
     assert "login:   ok" in out
@@ -134,3 +139,27 @@ def test_bench(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     assert code == 0
     assert [row["kind"] for row in rows] == ["cold", "warm_start", "warm"]
     assert all(not row.get("error") for row in rows)
+
+
+def test_sigterm_stops_serve_like_ctrl_c(tmp_path: Path, home: Path) -> None:
+    PairingStore().create("t")
+    port = free_port()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "meetstream_agent_kit", "serve", "--binary", str(STUB),
+         "--workdir", str(tmp_path), "--port", str(port), "--no-prime"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=dict(os.environ),
+    )  # fmt: skip
+    lock = home / "run" / f"serve-{port}.json"
+    deadline = time.monotonic() + 60
+    while not lock.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    proc.send_signal(signal.SIGTERM)
+    try:
+        out, _ = proc.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    assert proc.returncode == 0, out
+    assert "stopped" in out
+    assert not lock.exists()

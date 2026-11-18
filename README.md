@@ -66,15 +66,31 @@ share its screen, and more, whatever your MIA agent allows.
 You need macOS or Linux, Python 3.10 or newer, one [supported agent](#supported-agents)
 installed and signed in, and a [MeetStream](https://meetstream.ai) account.
 
-**1. Install the bridge and pair this computer.**
+**1. Install it and run it.**
 
 ```bash
 uv tool install meetstream-agent-kit
-meetstream-agent-kit pair --agent claude --label "my laptop"
+meetstream-agent-kit
 ```
 
-`pair` prints a token once and checks that your agent is signed in. Only the
-token's hash is kept on your computer.
+It asks a few questions: which agent should answer (it lists the ones it finds
+on your computer and checks they are signed in), the folder it works in, the
+most access this computer allows, and how MeetStream reaches your computer:
+
+- **Cloudflare quick tunnel:** no account needed. The address changes each time it starts.
+- **ngrok:** needs a free ngrok account. A free static domain keeps one address.
+- **An address you already have**, for example a named Cloudflare tunnel.
+
+It then runs one short test turn with your agent and asks **Start now?** On yes,
+it starts the bridge and the tunnel and prints the two things to paste:
+
+```text
+Paste these in the MeetStream dashboard:
+  Pairing token  (Integrations > Models > Local agent, shown once):  msak_…
+  Bridge URL     (Agents > your agent > Model > Your agent):          https://….trycloudflare.com
+```
+
+Next time, run `meetstream-agent-kit` and press Enter to start with the same answers.
 
 **2. Save the token in MeetStream.** In the dashboard, open **Integrations > Models > Local agent**, paste the token and save it.
 
@@ -83,34 +99,22 @@ token's hash is kept on your computer.
   <img src="https://raw.githubusercontent.com/meetstream-ai/agent-kit/main/docs/images/dashboard-pair-light.png" alt="MeetStream dashboard: Integrations, Models, Local agent, with the pairing steps and the token field" width="100%">
 </picture>
 
-**3. Start the bridge** in the folder your agent should work in, and give it an HTTPS address with a tunnel:
-
-```bash
-meetstream-agent-kit serve --agent claude --owner "Your Name"
-```
-
-```bash
-cloudflared tunnel --url http://127.0.0.1:8787
-```
-
-**4. Point your MIA agent at it.** Open the agent in the dashboard, go to
-**Model**, choose **Your agent** as the provider, and paste the tunnel's
-`https://` address.
+**3. Point your MIA agent at it.** Open the agent in the dashboard, go to
+**Model**, choose **Your agent** as the provider, and paste the Bridge URL.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/meetstream-ai/agent-kit/main/docs/images/dashboard-your-agent-dark.png">
   <img src="https://raw.githubusercontent.com/meetstream-ai/agent-kit/main/docs/images/dashboard-your-agent-light.png" alt="MeetStream dashboard: a MIA agent's Model tab with Your agent selected, the bridge URL, access level, activation code and Test connection" width="100%">
 </picture>
 
-**That's it.** Keep `serve` and the tunnel running. Every meeting this MIA agent
+**That's it.** Leave that window open. Every meeting this MIA agent
 joins now talks to your agent. Not sure everything is ready? Run
 `meetstream-agent-kit doctor`.
 
 > [!TIP]
-> A quick cloudflared tunnel gets a new address each time it starts. A
-> [named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-> or an [ngrok](https://ngrok.com/) static domain (`ngrok http 8787 --url=<your domain>`) keeps one address,
-> so you paste it once.
+> Prefer to run the pieces yourself? `meetstream-agent-kit pair`, then
+> `meetstream-agent-kit serve --agent claude --tunnel cloudflare` (or `--tunnel ngrok`,
+> or no `--tunnel` and your own `cloudflared tunnel --url http://127.0.0.1:8787`).
 
 ## Install
 
@@ -235,6 +239,7 @@ MeetStream Agent Kit 0.3.0 doctor
 
 | Command | What it does |
 |---|---|
+| *(no command)* or `setup` | guided setup: a few questions, a test turn, then start the bridge and tunnel and print the token and Bridge URL |
 | `pair [--agent NAME] [--label TEXT]` | create a pairing token (shown once) and check your agent's login |
 | `list` | list pairings |
 | `revoke ID` | revoke a pairing; its token stops working at once |
@@ -244,8 +249,9 @@ MeetStream Agent Kit 0.3.0 doctor
 
 `serve`, `doctor` and `bench` take `--agent`, `--command`, `--binary`,
 `--workdir`, `--owner`, `--model`, `--effort` and `--timeout`. `serve` also
-takes `--port`, `--max-access` (`readonly`, `confirm` or `full`) and
-`--no-prime`. `MEETSTREAM_AGENT_KIT_HOME` moves the config folder. Every
+takes `--port`, `--max-access` (`readonly`, `confirm` or `full`), `--no-prime`,
+and `--tunnel` (`cloudflare`, `ngrok`, `url` or `none`) with `--tunnel-url` for
+an ngrok static domain or your own address. `MEETSTREAM_AGENT_KIT_HOME` moves the config folder. Every
 command has `--help`.
 
 The HTTP protocol between MIA and the bridge is in [docs/protocol.md](docs/protocol.md).
