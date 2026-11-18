@@ -26,6 +26,8 @@ class RunResult:
     first_output_ms: float | None = None
     total_ms: float = 0.0
     deltas: list[str] = field(default_factory=list)
+    stderr_tail: str = ""
+    """The last lines the CLI wrote to stderr, to explain an empty or failed turn."""
 
 
 def build_oneshot_argv(
@@ -169,8 +171,9 @@ def run_once(
     joiner = "\n" if agent.parser == "text" else ""
     answer = final if final is not None else joiner.join(result.deltas)
     result.answer = answer.strip()[:MAX_ANSWER_CHARS]
+    tail = "".join(stderr_tail).strip()[-300:]
+    result.stderr_tail = tail
     if result.exit_code not in (0, None) and not result.answer and not result.error:
-        tail = "".join(stderr_tail).strip()[-300:]
         result.error = f"agent exited with {result.exit_code}" + (f": {tail}" if tail else "")
     if result.total_ms >= timeout_s * 1000 and not result.answer:
         result.error = f"agent timed out after {int(timeout_s)} s"

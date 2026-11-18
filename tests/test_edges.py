@@ -6,6 +6,7 @@ import dataclasses
 import http.client
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -64,8 +65,8 @@ def test_serve_runs_answers_and_stops_cleanly(tmp_path: Path, home: Path) -> Non
             out, _ = proc.communicate()
             raise
     assert proc.returncode == 0, out
-    assert "address: http://127.0.0.1:" in out
-    assert "login:   ok" in out
+    assert re.search(r"address\s+http://127\.0\.0\.1:\d+", out)
+    assert re.search(r"login\s+ok", out)
     assert "stopped" in out
     assert not (home / "run" / f"serve-{port}.json").exists()
 

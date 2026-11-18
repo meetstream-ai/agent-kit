@@ -15,29 +15,40 @@ import errno
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final
 
-from meetstream_agent_kit import __version__, checks
+from meetstream_agent_kit import __version__, checks, ui
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import DEFAULT_PORT, DEFAULT_TURN_TIMEOUT_S
 from meetstream_agent_kit.login import LoginChecker
-from meetstream_agent_kit.oneshot import build_oneshot_argv, run_once
+from meetstream_agent_kit.oneshot import RunResult, build_oneshot_argv, run_once
 from meetstream_agent_kit.pairing import PairingError, PairingStore, default_home
 from meetstream_agent_kit.prompts import format_turn, system_prompt
 from meetstream_agent_kit.server import BridgeServer
 from meetstream_agent_kit.session import MeetingSession
-from meetstream_agent_kit.setup import Prompter, SetupAnswers, ask_setup, load_answers, save_answers
+from meetstream_agent_kit.setup import (
+    SETUP_STEPS,
+    Prompter,
+    SetupAbortedError,
+    SetupAnswers,
+    ask_setup,
+    load_answers,
+    save_answers,
+)
 from meetstream_agent_kit.tunnel import TUNNEL_KINDS, Tunnel, TunnelError, TunnelSpec, make_spec
 
 PROG: Final = "meetstream-agent-kit"
+TAGLINE: Final = "Your own agent, live in your MeetStream meetings."
+TEST_TURN_TIMEOUT_S: Final = 120.0
 EXIT_OK: Final = 0
 EXIT_FAILED: Final = 1
 
@@ -166,6 +177,67 @@ def _stop_on_signals() -> None:
             signal.signal(sig, _interrupt)
 
 
+def _print_running(
+    config: BridgeConfig,
+    port: int,
+    tunnel: TunnelSpec,
+    public_url: str,
+    token: str,
+    login_state: str,
+    login_detail: str,
+) -> None:
+    """What is running, then the two things to paste, each on its own line so it is easy to copy."""
+    agent = config.agent
+    mode = "warm session per meeting" if agent.warm else "one run per turn"
+    login = login_state + (f" ({login_detail})" if login_detail and login_state != "ok" else "")
+    say("")
+    ui.box(
+        f"MeetStream Agent Kit {__version__}",
+        [
+            ("agent", f"{agent.label} ({mode})"),
+            ("folder", ui.short_path(str(config.workdir))),
+            ("access", config.max_access),
+            ("address", f"http://127.0.0.1:{port}"),
+            ("login", login),
+        ],
+    )
+    if login_state == "expired":
+        ui.fail(f"{agent.label} is signed out. Sign in again with:")
+        ui.command(agent.relogin)
+    if config.max_access == "full":
+        ui.warn("FULL access: the agent may run shell commands and change files without asking, but only in")
+        ui.note(
+            "meetings where only you (by verified id or activation code) can talk to it; otherwise it asks."
+        )
+    if agent.warm is None:
+        ui.warn("A custom command runs with your own permissions; the bridge cannot limit it.")
+    if not (token or public_url):
+        say("")
+        ui.note("Point your tunnel at it, for example:")
+        ui.command(f"cloudflared tunnel --url http://127.0.0.1:{port}")
+    else:
+        say("")
+        say(ui.paint("Next: paste these in the MeetStream dashboard", "bold"))
+        number = 1
+        if token:
+            say(
+                f"  {number}. Pairing token  "
+                + ui.paint("Integrations > Models > Local agent (shown once)", "dim")
+            )
+            say(f"     {ui.paint(token, 'green', 'bold')}")
+            number += 1
+        if public_url:
+            say(f"  {number}. Bridge URL     {ui.paint('Agents > your agent > Model > Your agent', 'dim')}")
+            say(f"     {ui.paint(public_url, 'cyan', 'bold')}")
+            if tunnel.kind == "cloudflare" or (tunnel.kind == "ngrok" and not tunnel.url):
+                ui.note(
+                    "This address changes each time the tunnel starts; update the Bridge URL when it does."
+                )
+    stops = " and the tunnel." if public_url and tunnel.kind != "url" else "."
+    say("")
+    say(f"{ui.paint('●', 'green')} Running. Leave this window open; Ctrl-C stops the bridge{stops}")
+
+
 def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: str = "") -> int:
     """Start the bridge (and its tunnel), print what to paste in the dashboard, serve until Ctrl-C."""
     home = default_home()
@@ -182,47 +254,10 @@ def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: s
     tun = Tunnel(tunnel, server.port)
     try:
         if tunnel.kind != "none":
-            say(f"Opening the tunnel ({tunnel.kind})...")
+            ui.note(f"Opening the tunnel ({tunnel.kind})...")
         public_url = tun.start()
         login = server.login.check(force=True)
-        agent = config.agent
-        mode = "warm session per meeting" if agent.warm else "one run per turn"
-        say(f"\nMeetStream Agent Kit {__version__}: {agent.label} ({mode}), max access {config.max_access}")
-        say(f"  folder:  {config.workdir}")
-        say(f"  address: http://127.0.0.1:{server.port}")
-        say(
-            f"  login:   {login.state}"
-            + (f" ({login.detail})" if login.detail and login.state != "ok" else "")
-        )
-        if login.state == "expired":
-            say(f"           sign in again with: {agent.relogin}")
-        if config.max_access == "full":
-            say(
-                "  FULL access: the agent may run shell commands and change files without asking, but only in"
-            )
-            say(
-                "  meetings where only you (by verified id or activation code) can talk to it;"
-                " otherwise it asks."
-            )
-        if agent.warm is None:
-            say("  note: a custom command runs with your own permissions; the bridge cannot limit it.")
-        say("")
-        if token or public_url:
-            say("Paste these in the MeetStream dashboard:")
-        if token:
-            say(f"  Pairing token  (Integrations > Models > Local agent, shown once):  {token}")
-        if public_url:
-            say(f"  Bridge URL     (Agents > your agent > Model > Your agent):          {public_url}")
-            if tunnel.kind == "cloudflare" or (tunnel.kind == "ngrok" and not tunnel.url):
-                say("  This address changes each time the tunnel starts; update the Bridge URL when it does.")
-        else:
-            say(
-                f"Point your tunnel at it, for example:  cloudflared tunnel --url http://127.0.0.1:{server.port}"
-            )
-        say(
-            "\nRunning. Leave this window open; Ctrl-C stops the bridge"
-            + (" and the tunnel." if public_url and tunnel.kind != "url" else ".")
-        )
+        _print_running(config, server.port, tunnel, public_url, token, login.state, login.detail)
         while runner.is_alive():
             runner.join(0.5)
     except KeyboardInterrupt:
@@ -248,9 +283,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return _run_bridge(config, args.port, _tunnel_spec(args))
 
 
-def _test_turn(config: BridgeConfig) -> bool:
+def _test_turn(config: BridgeConfig) -> RunResult:
     """One read-only turn, so a broken login or CLI shows up now and not in the meeting."""
-    say(f"\nTesting {config.agent.label} with one short turn...")
     turn = format_turn([{"speaker": config.owner, "text": "Reply with the single word: ready"}])
     argv, stdin_text = build_oneshot_argv(
         config.agent,
@@ -260,14 +294,49 @@ def _test_turn(config: BridgeConfig) -> bool:
         config.model,
         config.effort,
     )
-    result = run_once(config.agent, argv, stdin_text, str(config.workdir), min(config.timeout_s, 120.0))
-    if result.error or not result.answer.strip():
-        say(f"  It did not answer: {result.error or 'empty reply'}")
-        if config.agent.relogin:
-            say(f"  If it is signed out, run: {config.agent.relogin}")
-        return False
-    say(f"  It answered in {result.total_ms / 1000:.1f} s: {result.answer.strip()[:80]}")
-    return True
+    timeout = min(config.timeout_s, TEST_TURN_TIMEOUT_S)
+    with ui.spinner(f"Asking {config.agent.label} for one short answer"):
+        return run_once(config.agent, argv, stdin_text, str(config.workdir), timeout)
+
+
+def _check_agent(
+    prompt: Prompter,
+    config: BridgeConfig,
+    *,
+    turn: Callable[[BridgeConfig], RunResult] = _test_turn,
+    run: Callable[[list[str]], int] = lambda argv: subprocess.call(argv),
+) -> str:
+    """Test turn until it answers or the user decides: "ok", "anyway" or "quit"."""
+    agent = config.agent
+    timeout = min(config.timeout_s, TEST_TURN_TIMEOUT_S)
+    while True:
+        result = turn(config)
+        problem = checks.diagnose_turn(agent, result.answer, result.error, result.stderr_tail, timeout)
+        if problem is None:
+            ui.ok(f"{agent.label} answered in {result.total_ms / 1000:.1f} s: {result.answer.strip()[:80]}")
+            return "ok"
+        ui.fail(problem.message)
+        for line in problem.detail.splitlines()[-4:]:
+            ui.note(f"│ {line[:200]}")
+        ui.note(f"Fix: {problem.fix}")
+        login = checks.login_argv(agent) if problem.kind != "not_installed" else None
+        actions: list[tuple[str, str]] = []
+        if login:
+            actions.append(("login", f"Sign in now ({' '.join(login)}), then test again"))
+        actions += [
+            ("retry", "Test again"),
+            ("anyway", "Start anyway (MIA cannot use your agent until it answers)"),
+            ("quit", "Quit"),
+        ]
+        default = 0 if problem.kind in ("signed_out", "empty", "failed") or not login else 1
+        pick = actions[prompt.choose("What now?", [label for _, label in actions], default)][0]
+        if prompt.eof:
+            return "quit"  # input ended: never loop on a default answer
+        if pick == "login" and login:
+            ui.note(f"Running {' '.join(login)}. Finish signing in there; this test runs again after.")
+            run(login)
+        elif pick in ("anyway", "quit"):
+            return pick
 
 
 def _setup_namespace(answers: SetupAnswers) -> argparse.Namespace:
@@ -291,26 +360,32 @@ def cmd_setup(args: argparse.Namespace) -> int:
     _fail_on(checks.check_home(home))
     prompt = Prompter()
     last = load_answers(home)
-    say(f"MeetStream Agent Kit {__version__}: your own agent, live in MeetStream meetings.")
+    ui.header("MeetStream Agent Kit", __version__, TAGLINE)
     answers: SetupAnswers | None = None
-    if last and prompt.confirm(f"\nLast setup: {last.describe()}.\nStart with it?"):
-        answers = last
+    if last:
+        say("")
+        ui.box("Last setup", last.rows())
+        if prompt.confirm("Start with it?"):
+            answers = last
     if answers is None:
         answers = ask_setup(prompt, last)
         save_answers(home, answers)
     config = _build_config(_setup_namespace(answers), max_access=answers.max_access)
-    tested = getattr(args, "no_test", False) or _test_turn(config)
-    if not tested and not prompt.confirm("Start anyway?", default=False):
+    ui.step(SETUP_STEPS, SETUP_STEPS, "Test")
+    if getattr(args, "no_test", False):
+        ui.note("Skipped (--no-test).")
+    elif _check_agent(prompt, config) == "quit":
+        say(f"Saved your answers. Run `{PROG}` again when the agent is ready.")
         return EXIT_FAILED
     store = PairingStore(home)
     token = ""
     pairings = store.list()
     keep = bool(pairings) and prompt.confirm(
-        f"\nKeep using your pairing {pairings[-1].id} ({pairings[-1].label}), already saved in the dashboard?"
+        f"Keep using your pairing {pairings[-1].id} ({pairings[-1].label}), already saved in the dashboard?"
     )
     if not keep:
         _pairing, token = store.create("custom agent" if answers.command else answers.agent)
-    if not prompt.confirm("\nStart now?"):
+    if not prompt.confirm("Start now?"):
         say(
             f"Saved. Run `{PROG}` any time to start."
             + (f"\nYour new pairing token (shown once): {token}" if token else "")
@@ -533,6 +608,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_FAILED
     except PairingError as exc:
         say(f"error: {exc}", err=True)
+        return EXIT_FAILED
+    except SetupAbortedError as exc:
+        say(f"error: setup stopped: {exc}", err=True)
         return EXIT_FAILED
     except KeyboardInterrupt:
         return 130
