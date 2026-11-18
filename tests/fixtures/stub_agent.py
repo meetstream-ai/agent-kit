@@ -118,6 +118,30 @@ def _rpc_loop(handle):
     reader()
 
 
+def list_stdio_mcp_tools():
+    """Like agents that load MCP tools at session start (STUB_MCP_AT_START=1)."""
+    import subprocess
+
+    server = next(iter(_acp.mcp), None)
+    if not server:
+        return
+    env = dict(os.environ)
+    env.update({item["name"]: item["value"] for item in server.get("env") or []})
+    proc = subprocess.Popen(
+        [server["command"], *server.get("args", [])],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    for msg_id, method in ((1, "initialize"), (2, "tools/list")):
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": {}}) + "\n")
+        proc.stdin.flush()
+        proc.stdout.readline()
+    proc.stdin.close()
+    proc.wait(timeout=10)
+
+
 def call_stdio_mcp_tool(name):
     """Like an ACP agent: start the stdio MCP server from session/new, then list and call a tool."""
     import subprocess
@@ -165,7 +189,14 @@ def _acp(msg, pending):
     if method == "initialize":
         emit({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1, "agentCapabilities": {}}})
     elif method == "session/new":
+        if os.environ.get("STUB_AUTH_FAIL") == "1":
+            emit(
+                {"jsonrpc": "2.0", "id": mid, "error": {"code": -32000, "message": "Authentication required"}}
+            )
+            return
         _acp.mcp = params.get("mcpServers") or []
+        if os.environ.get("STUB_MCP_AT_START") == "1":
+            list_stdio_mcp_tools()
         emit({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "sess_1"}})
     elif method == "session/set_model":
         _acp.model = params.get("modelId")
@@ -175,7 +206,11 @@ def _acp(msg, pending):
     elif method == "session/prompt":
         text = "".join(p.get("text", "") for p in params.get("prompt") or [])
         answer = ANSWER
-        tool = re.search(r"TOOL:([A-Za-z0-9_]+)", text)
+        tool = re.search(r"TOOL:([A-Za-z0-9_]+)", text) or re.search(
+            r"[Cc]all the ([A-Za-z0-9_]+) tool", text
+        )
+        if os.environ.get("STUB_NO_TOOLS") == "1":
+            tool = None
         if tool:
             answer = "Tool said: " + call_stdio_mcp_tool(tool.group(1))
         if "MODEL?" in text:
