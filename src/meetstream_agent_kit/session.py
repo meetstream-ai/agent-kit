@@ -27,6 +27,7 @@ from typing import Any, Final
 from meetstream_agent_kit.access import AccessLevel
 from meetstream_agent_kit.activation import ActivationGate
 from meetstream_agent_kit.agents import split_provider
+from meetstream_agent_kit.alerts import TITLE
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import (
@@ -85,6 +86,7 @@ class MeetingSession:
         self.mcp_secret = secrets.token_urlsafe(24)
         self.started_turns = 0
         self._warmup_running = False
+        self._alerted: set[str] = set()
         self.mcp_tools_listed: int | None = None
         """How many meeting tools the agent loaded over MCP (None until it asks)."""
         self.proc: subprocess.Popen[str] | None = None
@@ -165,6 +167,14 @@ class MeetingSession:
         if not self.config.quiet:
             say(f"[session] {self.session_id}: {text}")
 
+    def alert_once(self, kind: str, text: str) -> bool:
+        """One desktop notification per kind of failure per meeting. True when it was sent now."""
+        if kind in self._alerted:
+            return False
+        self._alerted.add(kind)
+        self.config.notify(TITLE, text)
+        return True
+
     def debug(self, text: str) -> None:
         """A protocol trace line, only with ``--debug`` / ``MS_AGENT_KIT_DEBUG=1``."""
         if self.config.debug:
@@ -215,6 +225,8 @@ class MeetingSession:
     def _spawn_env(self) -> dict[str, str]:
         env = dict(os.environ)
         env[MCP_SECRET_ENV] = self.mcp_secret
+        if self.config.ignore_rules:
+            env.update(dict(self.config.agent.ignore_rules_env))
         model_env = self.config.agent.model_env
         if self.model and model_env:
             env[model_env] = split_provider(self.model)[1]  # a provider:model id is set over ACP instead
@@ -368,7 +380,13 @@ class MeetingSession:
         agent = cfg.agent
         access: AccessLevel = "full" if self.access == "full" else "readonly"
         argv, stdin_text = build_oneshot_argv(
-            agent, self.rules(access) + "\n\n" + text, access, cfg.binary, self.model, cfg.effort
+            agent,
+            self.rules(access) + "\n\n" + text,
+            access,
+            cfg.binary,
+            self.model,
+            cfg.effort,
+            cfg.ignore_rules,
         )
         deltas: queue.Queue[Any] = queue.Queue()
         box: dict[str, RunResult] = {}

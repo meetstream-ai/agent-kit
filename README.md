@@ -276,7 +276,8 @@ MeetStream Agent Kit 0.3.3 doctor
 `--workdir`, `--owner`, `--model`, `--effort` and `--timeout`. `serve` also
 takes `--port`, `--max-access` (`readonly`, `confirm` or `full`), `--no-prime`,
 `--debug` (log each message type the agent sends, never the text; also
-`MS_AGENT_KIT_DEBUG=1`),
+`MS_AGENT_KIT_DEBUG=1`), `--ignore-rules` (skip the work folder's CLAUDE.md /
+AGENTS.md where the agent CLI can),
 and `--tunnel` (`cloudflare`, `ngrok`, `url` or `none`) with `--tunnel-url` for
 an ngrok static domain or your own address. `MEETSTREAM_AGENT_KIT_HOME` moves the config folder. Every
 command has `--help`.

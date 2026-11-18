@@ -37,6 +37,23 @@ All notable changes to this package. The format follows
   adding the meeting text and the answer to the context; `--turns-per-hour`
   changes it). Without a price it says "plan usage, no per-token bill".
 - Hermes `provider:model` ids go to `--provider` and `-m`.
+- When your agent fails in a meeting (out of credits, rate limited, timed out,
+  crashed), the bridge tells you on your desktop (macOS notification, or
+  `notify-send` on Linux; always a terminal line too), once per kind of
+  failure per meeting, with what to do. MIA gets a clean error with a
+  `reason` (`out_of_credits`, `rate_limited`, `timeout`, `crashed`, `failed`)
+  and stays quiet. Signed out is still told by the login check.
+- The default work folder is a quiet meeting workspace, `~/MeetStream Agent`,
+  created by setup; a project folder is opt-in. Agent CLIs read a folder's
+  project rules (CLAUDE.md, AGENTS.md, GEMINI.md, .cursorrules...) on every
+  turn, about 7k tokens for a 29 KB CLAUDE.md. Setup now lists them with
+  their token cost and offers to ignore them in meetings or to use the
+  workspace instead. `serve --ignore-rules` does the same. Claude Code skips
+  them with `--setting-sources user` (checked: the folder's CLAUDE.md is no
+  longer read), Codex with `-c project_doc_max_bytes=0`, Hermes with
+  `--ignore-rules` in single runs (in meetings `hermes acp` has no such
+  switch: only its auto-loaded skills are skipped, so use the workspace).
+  Antigravity has no switch.
 - Setup's test turns show live stages with real timings instead of a silent
   wait: "Woke Codex 0.3 s · First words 5.5 s · Answered 6.5 s", with rotating
   verbs (Pondering, Noodling, ...). The warm ACP check shows "Session ready ·

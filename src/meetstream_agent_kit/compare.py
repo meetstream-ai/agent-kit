@@ -58,6 +58,7 @@ def measure(config: BridgeConfig, model: str, effort: str) -> Measured:
         config.binary,
         model,
         effort,
+        config.ignore_rules,
     )
     report: Path | None = None
     if config.agent.usage_file_flag:

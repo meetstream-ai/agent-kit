@@ -73,6 +73,9 @@ def answer_turn(text):
     if os.environ.get("STUB_AUTH_FAIL") == "1":
         emit({"type": "result", "is_error": True, "result": AUTH_ERROR})
         return
+    if os.environ.get("STUB_FAIL_TEXT"):  # e.g. a CLI out of credits
+        emit({"type": "result", "is_error": True, "result": os.environ["STUB_FAIL_TEXT"]})
+        return
     first = float(os.environ.get("STUB_FIRST_S", "0"))
     total = float(os.environ.get("STUB_TOTAL_S", "0"))
     answer = ANSWER

@@ -162,6 +162,8 @@ class StreamJsonDriver(Driver):
         else:  # Antigravity has no system-prompt or MCP flags: the rules go in the first turn
             argv += cfg.agent.full_args if session.access == "full" else cfg.agent.readonly_args
         argv += cfg.agent.model_args(session.model)
+        if cfg.ignore_rules and cfg.agent.ignore_rules_warm:
+            argv += cfg.agent.ignore_rules_args
         argv += cfg.agent.effort_flags(cfg.effort)
         return argv
 
@@ -336,7 +338,9 @@ class AcpDriver(_JsonRpcDriver):
         self._prompt_id: int | None = None
 
     def argv(self, resume: bool) -> list[str]:
-        return [self.binary, *self.session.config.agent.acp_args]
+        cfg = self.session.config
+        extra = cfg.agent.ignore_rules_args if cfg.ignore_rules and cfg.agent.ignore_rules_warm else ()
+        return [self.binary, *cfg.agent.acp_args, *extra]
 
     def mcp_server(self, capabilities: dict[str, Any]) -> dict[str, Any]:
         """The meeting tools as an MCP server the agent can reach; the secret never goes in argv."""
@@ -569,6 +573,9 @@ class CodexDriver(_JsonRpcDriver):
 
     def argv(self, resume: bool) -> list[str]:
         argv = [self.binary, "app-server"]
+        cfg = self.session.config
+        if cfg.ignore_rules and cfg.agent.ignore_rules_warm:
+            argv += cfg.agent.ignore_rules_args
         if self.session.tools:
             server = f"mcp_servers.{MCP_SERVER_NAME}"
             argv += [

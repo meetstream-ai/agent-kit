@@ -97,6 +97,10 @@ The `code` of an `error` line is one of:
 - `cancelled`
 - `busy`: only when a running turn could not be stopped within 15 s.
 
+An `error` line may also carry `reason`: `out_of_credits`, `rate_limited`,
+`timeout`, `crashed` or `failed`. The owner is told on their desktop (once
+per reason per meeting), so MIA does not need to say anything in the meeting.
+
 **A turn never goes silent.** A warm turn with no output for `--timeout`
 seconds (default 60; the clock pauses while a meeting tool waits on MIA), or a
 one-run-per-turn agent that takes that long in all, is stopped: the bridge asks

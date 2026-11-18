@@ -50,6 +50,34 @@ MODEL_MENU_SIZE: Final = 12
 """Models shown in the menu; the rest are reached with "Type another model id"."""
 COMPARE_MAX: Final = 4
 
+PROJECT_RULE_FILES: Final = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    "GEMINI.md",
+    ".cursorrules",
+    ".github/copilot-instructions.md",
+)
+"""Files agent CLIs read from the work folder on every turn."""
+
+
+def meeting_workspace() -> Path:
+    """The default work folder: empty, so no project's rules ride along on every meeting turn."""
+    return Path.home() / "MeetStream Agent"
+
+
+def project_rules(folder: Path) -> list[tuple[str, int]]:
+    """(file, bytes) for each project rules file in ``folder``."""
+    found = []
+    for name in PROJECT_RULE_FILES:
+        try:
+            size = (folder / name).stat().st_size
+        except OSError:
+            continue
+        found.append((name, size))
+    return found
+
+
 ACCESS_CHOICES: tuple[tuple[str, str, str], ...] = (
     ("readonly", "Meeting only", "a meeting companion: reads the folder, changes nothing on this computer"),
     ("confirm", "Ask first", "may do anything on this computer; each command or change waits for your yes"),
@@ -75,6 +103,8 @@ class SetupAnswers:
     owner: str
     model: str = ""
     """Empty: the CLI's own default model."""
+    ignore_rules: str = ""
+    """"yes": skip the work folder's project rules in meetings, where the agent CLI can."""
     effort: str = ""
     """Empty: the CLI's own default effort."""
 
@@ -104,6 +134,7 @@ class SetupAnswers:
             ),
             ("Model", self.model or "the CLI's default"),
             ("Effort", self.effort or "the CLI's default"),
+            ("Project rules", "ignored in meetings" if self.ignore_rules == "yes" else "read if present"),
             ("Reached by", self.tunnel_label()),
             ("Your name", self.owner or "-"),
         ]
@@ -471,6 +502,37 @@ def _pick_model(
         return model, _pick_effort(prompt, listed, model, last_effort)
 
 
+def _review_project_rules(
+    prompt: Prompter, agent: AgentSpec, folder: Path, workspace: Path
+) -> tuple[str, bool]:
+    """Warn about project rules files the agent would read on every meeting turn. (folder, ignore)."""
+    found = project_rules(folder)
+    if not found:
+        return str(folder), False
+    total = sum(size for _, size in found)
+    ui.warn(
+        f"This folder has project rules your agent reads on every meeting turn (≈ {total // 4:,} tokens):"
+    )
+    for name, size in found:
+        ui.note(f"{name}  {size / 1024:.1f} KB ≈ {size // 4:,} tokens")
+    options: list[tuple[str, str, str]] = []
+    if agent.ignore_rules_args or agent.ignore_rules_env:
+        options.append(("ignore", "Ignore project rules in meetings", agent.ignore_rules_note))
+    options += [
+        ("workspace", "Use the meeting workspace instead", ui.short_path(str(workspace))),
+        ("keep", "Keep them", "slower, costlier turns"),
+    ]
+    if not (agent.ignore_rules_args or agent.ignore_rules_env):
+        ui.note(f"{agent.label} {agent.ignore_rules_note or 'has no switch to skip them'}.")
+    pick = options[
+        prompt.choose("Project rules in meetings", [o[1] for o in options], 0, [o[2] for o in options])
+    ][0]
+    if pick == "workspace":
+        workspace.mkdir(parents=True, exist_ok=True)
+        return str(workspace.resolve()), False
+    return str(folder), pick == "ignore"
+
+
 # ── Step 4: how MeetStream reaches this computer ──────────────────────────────
 
 
@@ -615,7 +677,7 @@ def ask_setup(
         _check_login(prompt, agent, binary, run)
 
     ui.step(2, SETUP_STEPS, "Model")
-    default_dir = last.workdir if last else (cwd or str(Path.cwd()))
+    default_dir = last.workdir if last else (cwd or str(meeting_workspace()))
     model = effort = ""
     if command:
         ui.note("A custom command picks its own model.")
@@ -638,12 +700,19 @@ def ask_setup(
         )
 
     ui.step(3, SETUP_STEPS, "Folder")
+    workspace = meeting_workspace()
+    ui.note(f"{ui.short_path(str(workspace))} is a quiet meeting workspace: no project rules on every turn.")
+    ui.note("Type a project folder instead to let your agent see that code.")
     while True:
         workdir = str(Path(prompt.ask("Folder your agent works in", default_dir)).expanduser().resolve())
+        if Path(workdir) == workspace.resolve() and not workspace.exists():
+            workspace.mkdir(parents=True, exist_ok=True)
+            ui.ok(f"Created {ui.short_path(str(workspace))}")
         check = checks.check_workdir(Path(workdir))
         if check.ok:
             break
         ui.fail(check.message)
+    workdir, ignore_rules = _review_project_rules(prompt, agent, Path(workdir), workspace)
 
     ui.step(4, SETUP_STEPS, "Access")
     ui.note("The most this computer allows. Your MIA agent's settings can only lower it.")
@@ -671,4 +740,5 @@ def ask_setup(
         owner=owner,
         model=model,
         effort=effort,
+        ignore_rules="yes" if ignore_rules else "",
     )

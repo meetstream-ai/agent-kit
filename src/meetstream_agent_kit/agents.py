@@ -50,6 +50,14 @@ class AgentSpec:
     model_env: str | None = None
     provider_flag: str | None = None
     """For ``provider:model`` ids (Hermes): the provider goes to this flag, the model to ``model_flag``."""
+    ignore_rules_args: tuple[str, ...] = ()
+    """Skips the work folder's project rules (CLAUDE.md, AGENTS.md...) in one-run mode."""
+    ignore_rules_warm: bool = False
+    """``ignore_rules_args`` also work for the warm process."""
+    ignore_rules_env: tuple[tuple[str, str], ...] = ()
+    """Environment that skips some of them (both modes)."""
+    ignore_rules_note: str = ""
+    """What is and is not skipped, shown in setup."""
     usage_file_flag: str | None = None
     """One-run flag that writes a JSON usage report to a file (Hermes ``--usage-file``)."""
     login_check: tuple[str, ...] | None = None
@@ -124,6 +132,9 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             relogin="claude auth login",
             install_hint="Install Claude Code: npm install -g @anthropic-ai/claude-code",
             install="npm install -g @anthropic-ai/claude-code",
+            ignore_rules_args=("--setting-sources", "user"),
+            ignore_rules_warm=True,
+            ignore_rules_note="skips the folder's CLAUDE.md and project settings (--setting-sources user)",
             install_needs=("npm",),
         ),
         # Codex never streams token deltas one-shot (the answer arrives whole);
@@ -144,6 +155,9 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             relogin="codex login",
             install_hint="Install Codex CLI: npm install -g @openai/codex",
             install="npm install -g @openai/codex",
+            ignore_rules_args=("-c", "project_doc_max_bytes=0"),
+            ignore_rules_warm=True,
+            ignore_rules_note="skips the folder's AGENTS.md (-c project_doc_max_bytes=0)",
             install_needs=("npm",),
         ),
         # Copilot's JSONL schema is not documented, so -s (answer text only).
@@ -184,6 +198,7 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             model_flag="--model",
             relogin="agy acp --login",
             install_hint=f"Install the Antigravity CLI: {_CURL}https://antigravity.google/cli/install.sh{_BASH}",
+            ignore_rules_note="has no switch to skip the folder's rules; use the meeting workspace",
             install="curl -fsSL https://antigravity.google/cli/install.sh | bash",
             install_needs=("curl", "bash"),
         ),
@@ -221,6 +236,12 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             usage_file_flag="--usage-file",
             relogin="hermes setup",
             install_hint=f"Install Hermes Agent: {_CURL}https://hermes-agent.nousresearch.com/install.sh{_BASH}",
+            ignore_rules_args=("--ignore-rules",),
+            ignore_rules_env=(("HERMES_IGNORE_RULES", "1"),),
+            ignore_rules_note=(
+                "skips AGENTS.md, SOUL.md and memory in single runs (--ignore-rules); in meetings "
+                "(hermes acp) only auto-loaded skills are skipped, so use the meeting workspace"
+            ),
             install="curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
             install_needs=("curl", "bash"),
         ),
