@@ -20,6 +20,8 @@ jobs:
   build:
     name: Test and build
     runs-on: ubuntu-latest
+    outputs:
+      on_pypi: ${{ steps.pypi.outputs.on_pypi }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -29,6 +31,14 @@ jobs:
         run: |
           version=$(uv run --no-project python -c "import re,pathlib;print(re.search(r'__version__ = \"(.+)\"', pathlib.Path('src/meetstream_agent_kit/__init__.py').read_text()).group(1))")
           test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != version ${version}"; exit 1; }
+      - name: Already on PyPI?
+        id: pypi
+        # A version PyPI already has (for example one uploaded by hand) is not
+        # uploaded again; the GitHub release then carries PyPI's own files.
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/meetstream-agent-kit/${GITHUB_REF_NAME#v}/json")
+          if [ "$code" = "200" ]; then echo "on_pypi=true" >> "$GITHUB_OUTPUT"; else echo "on_pypi=false" >> "$GITHUB_OUTPUT"; fi
+          echo "PyPI answered $code for ${GITHUB_REF_NAME#v}"
       - run: uv sync --locked
       - run: uv run ruff check . && uv run mypy && uv run pytest
       - run: uv build
@@ -43,6 +53,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs: build
+    if: needs.build.outputs.on_pypi != 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -61,7 +72,11 @@ jobs:
 
   github-release:
     name: GitHub release
-    needs: publish-pypi
+    needs: [build, publish-pypi]
+    # Runs after a fresh upload, or when the version was already on PyPI.
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success' &&
+      (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -70,6 +85,21 @@ jobs:
         with:
           name: dist
           path: dist/
+      - name: Use the files PyPI already has
+        if: needs.build.outputs.on_pypi == 'true'
+        # Same bytes as on PyPI, checked against PyPI's sha256; the .pyz stays the fresh build.
+        run: |
+          rm -f dist/*.whl dist/*.tar.gz dist/SHA256SUMS
+          curl -sSf "https://pypi.org/pypi/meetstream-agent-kit/${GITHUB_REF_NAME#v}/json" -o pypi.json
+          python3 - <<'PY'
+          import hashlib, json, pathlib, urllib.request
+          for f in json.load(open("pypi.json"))["urls"]:
+              data = urllib.request.urlopen(f["url"], timeout=60).read()
+              assert hashlib.sha256(data).hexdigest() == f["digests"]["sha256"], f["filename"]
+              pathlib.Path("dist", f["filename"]).write_bytes(data)
+              print("from PyPI:", f["filename"])
+          PY
+          cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
