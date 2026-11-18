@@ -243,7 +243,7 @@ class StreamJsonDriver(Driver):
     def cancel(self) -> None:
         # stream-json has no "stop": restart the process and resume the conversation.
         if self.session.turn_running:
-            threading.Thread(target=self.session.restart, daemon=True).start()
+            self.session.restart_in_background()
 
 
 # ── JSON-RPC over stdio (shared by ACP and Codex app-server) ──────────────────
@@ -374,7 +374,7 @@ class AcpDriver(_JsonRpcDriver):
                     "clientInfo": _CLIENT_INFO,
                 },
             )
-            offer_mcp = bool(session.tools) and session.config.agent.acp_mcp
+            offer_mcp = bool(session.tools or session.local_tools_allowed) and session.config.agent.acp_mcp
             servers = [self.mcp_server(init.get("agentCapabilities") or {})] if offer_mcp else []
             created = self.request("session/new", {"cwd": str(session.config.workdir), "mcpServers": servers})
             self.acp_session_id = str(created.get("sessionId") or "")
@@ -483,7 +483,7 @@ class AcpDriver(_JsonRpcDriver):
             return False
         kind = str(tool_call.get("kind") or "other")
         title = str(tool_call.get("title") or "")
-        if kind in _SAFE_ACP_KINDS or any(name and name in title for name in session.tool_names()):
+        if kind in _SAFE_ACP_KINDS or any(name and name in title for name in session.offered_tool_names()):
             return True
         raw_input = json.dumps(tool_call.get("rawInput") or {})[:200]
         return session.allow_action(f"{kind}: {title} {raw_input}")
@@ -576,7 +576,7 @@ class CodexDriver(_JsonRpcDriver):
         cfg = self.session.config
         if cfg.ignore_rules and cfg.agent.ignore_rules_warm:
             argv += cfg.agent.ignore_rules_args
-        if self.session.tools:
+        if self.session.tools or self.session.local_tools_allowed:
             server = f"mcp_servers.{MCP_SERVER_NAME}"
             argv += [
                 "-c",

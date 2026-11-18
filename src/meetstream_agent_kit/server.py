@@ -33,6 +33,7 @@ from meetstream_agent_kit.constants import (
     MCP_SERVER_NAME,
     TIMEOUT_REPLY,
 )
+from meetstream_agent_kit.local_apps import LOCAL_TOOLS
 from meetstream_agent_kit.login import LoginChecker
 from meetstream_agent_kit.pairing import PairingError, PairingStore
 from meetstream_agent_kit.prompts import format_turn
@@ -473,7 +474,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             name = str(params.get("name") or "")
             raw_args = params.get("arguments")
             args: Body = raw_args if isinstance(raw_args, dict) else {}
-            if name == APPROVE_TOOL and session.access == "confirm":
+            if name in LOCAL_TOOLS:  # the bridge's own tools, run on this computer
+                output, is_error = session.local_tool(name, args)
+                result = {"content": [{"type": "text", "text": output}], "isError": is_error}
+            elif name == APPROVE_TOOL and session.access == "confirm":
                 result = self._approve(args)
             elif name in session.tool_names():
                 output, is_error = session.call_tool(name, args)

@@ -173,6 +173,7 @@ class Tunnel:
         self._published = published
         self._proc: subprocess.Popen[str] | None = None
         self.start_timeout_s = START_TIMEOUT_S
+        self.reach_timeout_s = REACH_TIMEOUT_S
 
     def argv(self, binary: str) -> list[str]:
         local = f"http://127.0.0.1:{self.port}"
@@ -261,7 +262,7 @@ class Tunnel:
             time.sleep(1.0)
 
     def _wait_reachable(self) -> None:
-        deadline = time.monotonic() + REACH_TIMEOUT_S
+        deadline = time.monotonic() + self.reach_timeout_s
         self._wait_published(deadline)
         while time.monotonic() < deadline:
             if self._check(self.url):
