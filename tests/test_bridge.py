@@ -17,7 +17,7 @@ import pytest
 
 from meetstream_agent_kit import activation
 from meetstream_agent_kit.activation import ActivationGate
-from meetstream_agent_kit.agents import custom_agent
+from meetstream_agent_kit.agents import AGENTS, custom_agent
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.drivers import AcpDriver, CodexDriver, StreamJsonDriver
 from meetstream_agent_kit.session import MeetingSession
@@ -532,3 +532,65 @@ def test_screenshots_reach_the_agent_as_mcp_images(bridge: Bridge) -> None:
     assert bridge.post("/v1/tool_result", result)[0] == 200
     assert len(waiter.output) > 300_000  # kept whole; text results are capped
     assert waiter.output.endswith(image[-50:])
+
+
+# ── Antigravity over ACP (MS-2290: agy had no meeting tools) ─────────────────
+
+
+def test_antigravity_runs_warm_over_acp_with_the_meeting_tools(tmp_path: Path) -> None:
+    session = make_session(tmp_path, "agy", tools=TOOLS, port=8787, instructions="Be brief.")
+    driver = session.driver
+    assert isinstance(driver, AcpDriver)
+    assert driver.argv(resume=False) == [str(STUB), "acp"]
+    assert AGENTS["agy"].can_confirm  # Ask first now works: agy asks Allow/Deny over ACP
+    session.start()
+    first = run(session, "what is the answer?")
+    assert first[-1] == {**first[-1], "type": "done", "text": "The answer is 42."}
+    assert run(session, "again")[-1]["type"] == "done"
+    session.close()
+
+
+def test_antigravity_meeting_tool_round_trip_over_acp(start_bridge: Callable[..., Bridge]) -> None:
+    """A tool call from agy reaches MIA through the stdio shim given in session/new, and back."""
+    bridge = start_bridge(agent="agy")
+    _, started = bridge.post("/v1/session/start", {"session_id": "bot1", "tools": TOOLS})
+    assert started["warm"] is True
+    result: dict[str, Any] = {}
+    turn = {"session_id": "bot1", "messages": [{"speaker": "Nav", "text": "TOOL:send_chat_message"}]}
+    thread = threading.Thread(target=lambda: result.update(turn=bridge.post("/v1/turn", turn, stream=True)))
+    thread.start()
+    session = bridge.sessions["bot1"]
+    wait_for(lambda: bool(session.pending_tool_calls()), timeout_s=20)
+    call_id = session.pending_tool_calls()[0]
+    status, _ = bridge.post("/v1/tool_result", {"session_id": "bot1", "call_id": call_id, "output": "posted"})
+    assert status == 200
+    thread.join(20)
+    _, events = result["turn"]
+    calls = [e for e in events if e["type"] == "tool_call"]
+    assert calls[0]["name"] == "send_chat_message"
+    assert events[-1] == {**events[-1], "type": "done", "text": "Tool said: posted"}
+
+
+def test_antigravity_permissions_follow_the_access_level(tmp_path: Path) -> None:
+    for access, expected in (("readonly", "permission no"), ("full", "permission yes")):
+        session = make_session(tmp_path, "agy", access=access)
+        session.start()
+        assert run(session, "PERMISSION")[-1]["text"] == expected
+        session.close()
+    asked: list[str] = []
+    session = make_session(tmp_path, "agy", access="confirm", confirm=lambda a: asked.append(a) or False)
+    session.start()
+    assert run(session, "PERMISSION")[-1]["text"] == "permission no"
+    assert asked  # Ask first asked in the terminal
+    session.close()
+
+
+def test_antigravity_gets_mias_model_per_session(tmp_path: Path) -> None:
+    session = make_session(tmp_path, "agy", model="gemini-3.8-flash-medium")
+    session.start()
+    assert run(session, "MODEL?")[-1]["text"] == "model gemini-3.8-flash-medium"
+    session.close()
+    other = make_session(tmp_path, "hermes", model="some-model")  # other ACP agents: unchanged
+    other.start()
+    assert run(other, "MODEL?")[-1]["text"] == "model None"
+    other.close()

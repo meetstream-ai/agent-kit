@@ -4,6 +4,23 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.2] - Unreleased
+
+### Fixed
+
+- Antigravity gets the meeting tools. Its warm session ran on `agy -p`
+  stream-json, which has no way to add an MCP server, so MIA's tools never
+  reached it (MIA logged `tools=0`). It now runs `agy acp`, and the meeting
+  tools go in `session/new` through the same stdio shim the other ACP agents use.
+
+### Changed
+
+- Antigravity's command and file-change requests (Allow/Deny over ACP) are
+  answered by access level, so **Ask first** works for it (it used to run as
+  **Meeting only**). MIA's model choice is sent with `session/set_model`; if
+  agy does not take it, the bridge logs that and agy's own model answers.
+  Single runs (the setup test, `bench`) still use `agy -p`.
+
 ## [0.3.1] - Unreleased
 
 ### Fixed

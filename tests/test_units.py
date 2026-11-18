@@ -164,7 +164,9 @@ def test_custom_agent() -> None:
 
 
 def test_which_agents_can_ask_before_acting() -> None:
+    # Every built-in agent can (Antigravity since it runs over ACP); a custom command cannot.
     assert {name for name, agent in AGENTS.items() if agent.can_confirm} == {
+        "agy",
         "claude",
         "codex",
         "copilot",
@@ -172,6 +174,9 @@ def test_which_agents_can_ask_before_acting() -> None:
         "muse",
         "openclaw",
     }
+    decision = effective_access(custom_agent("mytool {prompt}"), "confirm", "", False)
+    assert decision.level == "readonly"
+    assert "cannot ask before acting" in decision.reason
 
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
@@ -214,7 +219,7 @@ def test_parsers_and_error_classes() -> None:
         ("claude", "full", "full", False, "confirm"),  # full needs a verified owner
         ("codex", "full", "full", True, "full"),
         ("hermes", "confirm", "", False, "confirm"),
-        ("agy", "confirm", "", False, "readonly"),  # agy cannot ask before acting
+        ("agy", "confirm", "", False, "confirm"),  # agy asks Allow/Deny over ACP
         ("agy", "full", "", True, "full"),
         ("claude", "bogus", "full", True, "readonly"),
     ],

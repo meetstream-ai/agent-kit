@@ -1,9 +1,9 @@
 """Warm drivers: how the bridge talks to a long-lived agent process.
 
-* :class:`StreamJsonDriver`: Claude Code and Antigravity, one JSON line per turn
-  in and stream-json events out.
-* :class:`AcpDriver`: Agent Client Protocol (JSON-RPC 2.0 over stdio): Hermes,
-  Copilot CLI, Muse Code, OpenClaw.
+* :class:`StreamJsonDriver`: Claude Code, one JSON line per turn in and
+  stream-json events out.
+* :class:`AcpDriver`: Agent Client Protocol (JSON-RPC 2.0 over stdio): Antigravity,
+  Hermes, Copilot CLI, Muse Code, OpenClaw.
 * :class:`CodexDriver`: ``codex app-server`` (typed JSON-RPC: threads and turns).
 
 A driver builds the agent's command line, reads its output into the session's
@@ -110,7 +110,7 @@ class Driver(ABC):
             self.session.end_turn()
 
 
-# ── Claude Code and Antigravity: stream-json ──────────────────────────────────
+# ── Claude Code (and a custom agy stream-json spec): stream-json ─────────────────
 
 
 class StreamJsonDriver(Driver):
@@ -322,7 +322,7 @@ class _JsonRpcDriver(Driver):
                 yield message
 
 
-# ── ACP: Hermes, Copilot CLI, Muse Code, OpenClaw ─────────────────────────────
+# ── ACP: Antigravity, Hermes, Copilot CLI, Muse Code, OpenClaw ────────────────
 
 
 class AcpDriver(_JsonRpcDriver):
@@ -372,11 +372,20 @@ class AcpDriver(_JsonRpcDriver):
             servers = [self.mcp_server(init.get("agentCapabilities") or {})] if offer_mcp else []
             created = self.request("session/new", {"cwd": str(session.config.workdir), "mcpServers": servers})
             self.acp_session_id = str(created.get("sessionId") or "")
+            if session.model and session.config.agent.acp_set_model:
+                self._set_model(session.model)
             session.ready.set()
         except Exception as exc:
             self.acp_session_id = None
             session.emit("error", f"ACP start failed: {exc}")
             session.end_turn()
+
+    def _set_model(self, model: str) -> None:
+        """Ask for MIA's model; an agent that cannot switch keeps its own and the meeting goes on."""
+        try:
+            self.request("session/set_model", {"sessionId": self.acp_session_id, "modelId": model}, 15.0)
+        except (RuntimeError, TimeoutError) as exc:
+            self.session.log(f"model {model!r} not set ({exc}); the agent's own model answers")
 
     def read(self, proc: subprocess.Popen[str]) -> None:
         session = self.session
