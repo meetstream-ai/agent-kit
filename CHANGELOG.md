@@ -15,6 +15,13 @@ All notable changes to this package. The format follows
 
 ### Changed
 
+- The agent's instructions follow the access level the meeting runs at. Before,
+  every level was told to act only in the meeting, so **Full** refused local
+  work it was allowed to do. Now **Meeting only** (`readonly`) is a meeting
+  companion that changes nothing on the computer, **Ask first** (`confirm`) may
+  do anything after your yes, and **Full** may do anything without asking
+  (checking out loud before anything hard to undo). Setup and the README use
+  these names.
 - Setup looks like a modern agent CLI: a header, numbered steps, arrow-key
   menus, coloured ✓/✗ checks, a spinner for slow steps, and a summary of what
   is running with the pairing token and Bridge URL each on its own line.

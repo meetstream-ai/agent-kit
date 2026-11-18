@@ -43,9 +43,9 @@ SETUP_STEPS: Final = 6
 """Agent, folder, access, tunnel, name, then the test turn (run by the CLI)."""
 
 ACCESS_CHOICES: tuple[tuple[str, str, str], ...] = (
-    ("readonly", "Read-only", "reads and searches the folder, changes nothing"),
-    ("confirm", "Ask me first", "each command or file change waits for a yes here"),
-    ("full", "Full", "no prompts; only when you alone can talk to it"),
+    ("readonly", "Meeting only", "a meeting companion: reads the folder, changes nothing on this computer"),
+    ("confirm", "Ask first", "may do anything on this computer; each command or change waits for your yes"),
+    ("full", "Full", "may do anything on this computer without asking; only when you alone can talk to it"),
 )
 
 TUNNEL_CHOICES: tuple[tuple[str, str, str], ...] = (
@@ -84,7 +84,12 @@ class SetupAnswers:
         return [
             ("Agent", self.agent_label()),
             ("Folder", ui.short_path(self.workdir)),
-            ("Access", self.max_access),
+            (
+                "Access",
+                next(
+                    (label for name, label, _ in ACCESS_CHOICES if name == self.max_access), self.max_access
+                ),
+            ),
             ("Reached by", self.tunnel_label()),
             ("Your name", self.owner or "-"),
         ]

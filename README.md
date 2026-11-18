@@ -267,9 +267,12 @@ same for every agent; the bridge maps each one to that agent's own controls.
 
 | Level | Your agent may | Claude Code | Codex | ACP agents |
 |---|---|---|---|---|
-| **Read-only** (default) | read and search the work folder | Read, Grep, Glob only | read-only sandbox | permission requests denied |
-| **Ask me first** (`confirm`) | act after you answer y/N in the bridge terminal; no answer in 20 s means no | asks per tool | on-request approvals | permission requests asked |
-| **Full** | act without asking | edits and shell | workspace-write sandbox | permission requests allowed |
+| **Meeting only** (`readonly`, default) | be a meeting companion: act in the meeting, read and search the work folder, change nothing on your computer | Read, Grep, Glob only | read-only sandbox | permission requests denied |
+| **Ask first** (`confirm`) | do anything on your computer after you answer y/N in the bridge terminal; no answer in 20 s means no | asks per tool | on-request approvals | permission requests asked |
+| **Full** | do anything on your computer without asking | edits and shell | workspace-write sandbox | permission requests allowed |
+
+Your agent is told which level it has, so it does not refuse work it is allowed
+to do or offer work it is not.
 
 **Your computer has the final say.** `serve --max-access` sets the highest
 level this computer allows. The setting in the MeetStream dashboard can lower
@@ -278,8 +281,8 @@ change can never give anyone more access than you allowed here.
 
 **Full** runs only when MIA guarantees that just you can talk to your agent
 (the activation code below, or a verified id); otherwise it drops to
-**Ask me first**. Antigravity and custom commands cannot ask before acting, so
-**Ask me first** runs them read-only. A custom `--command` always has your own
+**Ask first**. Antigravity and custom commands cannot ask before acting, so
+**Ask first** runs them as **Meeting only**. A custom `--command` always has your own
 permissions.
 
 ## Activation code
