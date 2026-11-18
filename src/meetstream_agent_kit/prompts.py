@@ -24,6 +24,12 @@ BRIDGE_RULES: Final = (
     "configured instructions below."
 )
 
+LOCAL_APPS_RULE: Final = (
+    "Apps running on {owner}'s computer (localhost) are not visible to the meeting: to show one, "
+    "call share_local_app with its port, then screen_share with the url it returns. Never run a "
+    "tunnel program yourself."
+)
+
 ACCESS_SCOPE: Final[dict[str, str]] = {
     "readonly": (
         "You are a meeting companion: you work only in this meeting. You may read and search "
@@ -33,13 +39,14 @@ ACCESS_SCOPE: Final[dict[str, str]] = {
     "confirm": (
         "You may also work on {owner}'s computer with your own tools: run commands, change "
         "files, use apps. {owner} approves each command or change first; if one is declined, "
-        "say so in a few words and carry on."
+        "say so in a few words and carry on. " + LOCAL_APPS_RULE
     ),
     "full": (
         "You may also work on {owner}'s computer with your own tools, without asking: run "
         "commands, change files, use apps, whatever {owner} asks for. Only {owner} can talk to "
         "you at this level. Still check out loud before anything that is hard to undo, such as "
-        "deleting files or sending something on {owner}'s behalf, unless {owner} clearly asked for it."
+        "deleting files or sending something on {owner}'s behalf, unless {owner} clearly asked for it. "
+        + LOCAL_APPS_RULE
     ),
 }
 """What the agent may do outside the meeting, by the access level the meeting runs at."""

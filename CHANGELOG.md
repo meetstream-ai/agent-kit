@@ -4,6 +4,30 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.4] - Unreleased
+
+### Added
+
+- `share_local_app(port, path?)` and `stop_local_app(port?)`: meeting tools the
+  bridge serves itself, at Full or Ask-first access (Ask first asks you here).
+  MIA's `screen_share` runs on the meeting bot's machine, so `localhost` there
+  is not your app; `share_local_app` opens a temporary public address for your
+  local port in the background (cloudflared quick tunnel; ngrok when
+  cloudflared cannot reach its edge, as on networks that block it), returns it
+  for `screen_share(url=...)`, and logs `[tunnel] 3000 -> https://...`. At most
+  two per meeting, all closed when the meeting ends. The agent's rules say how
+  to show local apps and to never run a tunnel program itself (Claude had run
+  `cloudflared` in the foreground and hung the turn). Note: free ngrok
+  addresses show ngrok's warning page to browsers first.
+
+### Fixed
+
+- A turn right after a cancelled one could end at once with nothing said
+  (Claude Code; "Stop sharing your screen" after a cancelled `get_balance`).
+  A cancel restarts Claude's process in the background, and the next turn could
+  reach the old process before the restart and take the cancelled turn's end
+  as its own. The next turn now waits for that restart.
+
 ## [0.3.3] - Unreleased
 
 ### Added

@@ -40,6 +40,8 @@ from meetstream_agent_kit.constants import (
     TOOL_RESULT_TIMEOUT_S,
 )
 from meetstream_agent_kit.drivers import Driver, make_driver
+from meetstream_agent_kit.local_apps import LOCAL_TOOLS, STOP_TOOL, LocalShares
+from meetstream_agent_kit.local_apps import TOOL_DEFS as LOCAL_TOOL_DEFS
 from meetstream_agent_kit.oneshot import RunResult, build_oneshot_argv, close_stream, run_once, stop_process
 from meetstream_agent_kit.parsers import classify_error
 from meetstream_agent_kit.prompts import system_prompt
@@ -86,7 +88,11 @@ class MeetingSession:
         self.mcp_secret = secrets.token_urlsafe(24)
         self.started_turns = 0
         self._warmup_running = False
+        self._restarted = threading.Event()
+        self._restarted.set()
+        """Clear while a cancel's restart is still to happen: the next turn must not reach the old process."""
         self._alerted: set[str] = set()
+        self.local_apps = LocalShares(log=lambda text: None if config.quiet else say(text))
         self.mcp_tools_listed: int | None = None
         """How many meeting tools the agent loaded over MCP (None until it asks)."""
         self.proc: subprocess.Popen[str] | None = None
@@ -141,7 +147,31 @@ class MeetingSession:
         return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
 
     def tool_names(self) -> set[str]:
+        """MIA's meeting tools (calls go to MIA)."""
         return {t["name"] for t in self.tools}
+
+    @property
+    def local_tools_allowed(self) -> bool:
+        """share_local_app / stop_local_app: only when the agent may act on this computer."""
+        return self.access in ("full", "confirm")
+
+    def offered_tool_names(self) -> set[str]:
+        """Every meeting tool the agent sees, MIA's and the bridge's own."""
+        return self.tool_names() | (set(LOCAL_TOOLS) if self.local_tools_allowed else set())
+
+    def local_tool(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        """Run one of the bridge's own meeting tools here (not at MIA)."""
+        if not self.local_tools_allowed:
+            return "not allowed at this access level", True
+        if name == STOP_TOOL:
+            port = arguments.get("port")
+            return self.local_apps.stop(port if isinstance(port, int) else None)
+        port, path = arguments.get("port"), str(arguments.get("path") or "")
+        if self.access == "confirm" and not self.allow_action(
+            f"share localhost:{port} with the meeting through a temporary public address"
+        ):
+            return "the owner did not allow sharing that app", True
+        return self.local_apps.share(port if isinstance(port, int) else -1, path)
 
     def allow_action(self, description: str) -> bool:
         """May the agent run a shell command or change a file right now?"""
@@ -242,7 +272,20 @@ class MeetingSession:
         if self.warm:
             self.start(resume=resume and self.started_turns > 0)
 
+    def restart_in_background(self) -> None:
+        """Restart after a cancel without blocking the caller; the next turn waits for it."""
+        self._restarted.clear()
+
+        def work() -> None:
+            try:
+                self.restart()
+            finally:
+                self._restarted.set()
+
+        threading.Thread(target=work, daemon=True, name="restart").start()
+
     def close(self) -> None:
+        self.local_apps.close_all()
         self._fail_pending("the meeting ended")
         with self._proc_lock:
             proc, self.proc = self.proc, None
@@ -281,6 +324,11 @@ class MeetingSession:
 
     def _warm_turn(self, driver: Driver, text: str) -> Iterator[Event]:
         t0 = time.monotonic()
+        # A cancel may still be replacing the process: writing to the old one would hand this turn
+        # the cancelled turn's tail (its last words and its end) and lose this turn's question.
+        if not self._restarted.wait(15):
+            yield _error("the agent is still restarting after the last cancel")
+            return
         if self.proc is None or self.proc.poll() is not None:
             self.start(resume=self.started_turns > 0)
         not_ready = driver.check_ready()
@@ -476,6 +524,8 @@ class MeetingSession:
             }
             for t in self.tools
         ]
+        if self.local_tools_allowed:
+            tools += [dict(tool) for tool in LOCAL_TOOL_DEFS]
         if self.access == "confirm":
             tools.append(
                 {
