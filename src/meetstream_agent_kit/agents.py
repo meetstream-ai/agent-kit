@@ -48,6 +48,10 @@ class AgentSpec:
     full_args: tuple[str, ...] = ()
     model_flag: str | None = None
     model_env: str | None = None
+    provider_flag: str | None = None
+    """For ``provider:model`` ids (Hermes): the provider goes to this flag, the model to ``model_flag``."""
+    usage_file_flag: str | None = None
+    """One-run flag that writes a JSON usage report to a file (Hermes ``--usage-file``)."""
     login_check: tuple[str, ...] | None = None
     """Side-effect-free login check (arguments after the binary), or None when the CLI has none."""
     login_ok_codes: tuple[int, ...] = (0,)
@@ -64,12 +68,26 @@ class AgentSpec:
         return self.warm in CONFIRM_DRIVERS
 
     def model_args(self, model: str) -> list[str]:
-        return [self.model_flag, model] if model and self.model_flag else []
+        if not model or not self.model_flag:
+            return []
+        provider, name = split_provider(model) if self.provider_flag else ("", model)
+        return ([self.provider_flag, provider] if provider and self.provider_flag else []) + [
+            self.model_flag,
+            name,
+        ]
 
     def effort_flags(self, effort: str) -> list[str]:
         if not effort:
             return []
         return [part.replace("{effort}", effort) for part in self.effort_args]
+
+
+def split_provider(model: str) -> tuple[str, str]:
+    """``nous:anthropic/claude-x`` -> ("nous", "anthropic/claude-x"); ``vendor/model:free`` has none."""
+    head, sep, rest = model.partition(":")
+    if sep and head and "/" not in head and rest:
+        return head, rest
+    return "", model
 
 
 _CURL: Final = "curl -fsSL "
@@ -199,6 +217,8 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             readonly_args=("--safe-mode", "-t", "web,vision,session_search"),
             model_flag="-m",
             model_env="HERMES_INFERENCE_MODEL",
+            provider_flag="--provider",
+            usage_file_flag="--usage-file",
             relogin="hermes setup",
             install_hint=f"Install Hermes Agent: {_CURL}https://hermes-agent.nousresearch.com/install.sh{_BASH}",
             install="curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",

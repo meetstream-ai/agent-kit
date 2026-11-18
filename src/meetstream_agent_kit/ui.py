@@ -267,3 +267,64 @@ def arrow_select(question: str, options: Sequence[str], default: int = 0, hints:
         sys.stdout.flush()
     answered(question, options[current])
     return current
+
+
+def multi_select(
+    question: str, options: Sequence[str], chosen: Sequence[int] = (), hints: Sequence[str] = ()
+) -> list[int]:
+    """Pick several options: ↑/↓ to move, Space to tick, Enter to finish. Needs a terminal."""
+    import termios  # Unix only; callers check is_interactive() first
+    import tty
+
+    fd = sys.stdin.fileno()
+    current = 0
+    ticked = set(chosen)
+    room = width() - 8
+    hint_list = list(hints) + [""] * (len(options) - len(hints))
+    pad = max(len(option) for option in options)
+
+    def render(first: bool) -> None:
+        if not first:
+            sys.stdout.write(f"\x1b[{len(options)}F")
+        for index, option in enumerate(options):
+            box_mark = paint("◉", "green") if index in ticked else paint("◯", "dim")
+            label = _clip(option.ljust(pad), room)
+            hint = hint_list[index]
+            extra = f"  {paint(hint, 'dim')}" if hint and len(label) + len(hint) + 2 <= room else ""
+            pointer = paint(_POINTER, "cyan", "bold") if index == current else " "
+            text = paint(label, "cyan", "bold") if index == current else label
+            sys.stdout.write(f"\x1b[2K  {pointer} {box_mark} {text}{extra}\n")
+        sys.stdout.flush()
+
+    keys = "↑/↓ move, Space tick, Enter done"
+    title = _clip(question, width() - 3)
+    shown_keys = f"  {paint(keys, 'dim')}" if len(title) + len(keys) + 4 <= width() else ""
+    sys.stdout.write(f"{paint('?', 'cyan', 'bold')} {paint(title, 'bold')}{shown_keys}\n")
+    old = termios.tcgetattr(fd)
+    sys.stdout.write("\x1b[?25l")
+    try:
+        tty.setcbreak(fd)
+        render(True)
+        while True:
+            key = _read_key(fd)
+            if key in ("\r", "\n", "\x04"):
+                break
+            if key == "\x03":
+                raise KeyboardInterrupt
+            if key in _UP:
+                current = (current - 1) % len(options)
+            elif key in _DOWN:
+                current = (current + 1) % len(options)
+            elif key == " ":
+                ticked ^= {current}
+            elif key.isdigit() and 1 <= int(key) <= len(options):
+                ticked ^= {int(key) - 1}
+            render(False)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[?25h")
+        sys.stdout.write(f"\x1b[{len(options) + 1}F\x1b[J")
+        sys.stdout.flush()
+    picked = sorted(ticked)
+    answered(question, ", ".join(options[i] for i in picked) or "(none)")
+    return picked

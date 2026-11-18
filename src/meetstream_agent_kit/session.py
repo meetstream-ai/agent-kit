@@ -26,6 +26,7 @@ from typing import Any, Final
 
 from meetstream_agent_kit.access import AccessLevel
 from meetstream_agent_kit.activation import ActivationGate
+from meetstream_agent_kit.agents import split_provider
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import (
@@ -216,7 +217,7 @@ class MeetingSession:
         env[MCP_SECRET_ENV] = self.mcp_secret
         model_env = self.config.agent.model_env
         if self.model and model_env:
-            env[model_env] = self.model
+            env[model_env] = split_provider(self.model)[1]  # a provider:model id is set over ACP instead
         return env
 
     def restart(self, resume: bool = True) -> None:

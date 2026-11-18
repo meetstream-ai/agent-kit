@@ -15,6 +15,7 @@ from meetstream_agent_kit.access import AccessLevel
 from meetstream_agent_kit.agents import AgentSpec
 from meetstream_agent_kit.constants import MAX_ANSWER_CHARS, STOP_GRACE_S
 from meetstream_agent_kit.parsers import PARSERS
+from meetstream_agent_kit.usage import Usage, usage_from_lines
 
 
 @dataclass
@@ -26,6 +27,8 @@ class RunResult:
     first_output_ms: float | None = None
     total_ms: float = 0.0
     deltas: list[str] = field(default_factory=list)
+    usage: Usage | None = None
+    """Token usage the CLI reported for the run, when it prints one."""
     stderr_tail: str = ""
     """The last lines the CLI wrote to stderr, to explain an empty or failed turn."""
 
@@ -146,6 +149,8 @@ def run_once(
             except BrokenPipeError:
                 pass
         for raw in proc.stdout:
+            if '"usage"' in raw:
+                result.usage = usage_from_lines([raw]) or result.usage
             line = parse(raw.rstrip("\n"))
             if line.error:
                 result.error = line.error

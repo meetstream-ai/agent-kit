@@ -25,8 +25,11 @@ from typing import Any, Final
 from meetstream_agent_kit import checks, ui
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
+from meetstream_agent_kit.compare import Measured, chart_lines, compare, measure
+from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.login import LoginChecker
+from meetstream_agent_kit.models import ModelCatalog, ModelChoice, catalog_for
 from meetstream_agent_kit.tunnel import (
     NGROK_AUTHTOKEN_URL,
     NGROK_DOMAINS_URL,
@@ -39,8 +42,12 @@ from meetstream_agent_kit.tunnel import (
     read_ngrok_setup,
 )
 
-SETUP_STEPS: Final = 6
-"""Agent, folder, access, tunnel, name, then the test turn (run by the CLI)."""
+SETUP_STEPS: Final = 7
+"""Agent, model, folder, access, tunnel, name, then the test turn (run by the CLI)."""
+
+MODEL_MENU_SIZE: Final = 12
+"""Models shown in the menu; the rest are reached with "Type another model id"."""
+COMPARE_MAX: Final = 4
 
 ACCESS_CHOICES: tuple[tuple[str, str, str], ...] = (
     ("readonly", "Meeting only", "a meeting companion: reads the folder, changes nothing on this computer"),
@@ -65,6 +72,10 @@ class SetupAnswers:
     tunnel: str
     tunnel_url: str
     owner: str
+    model: str = ""
+    """Empty: the CLI's own default model."""
+    effort: str = ""
+    """Empty: the CLI's own default effort."""
 
     def agent_label(self) -> str:
         return self.command or (AGENTS[self.agent].label if self.agent in AGENTS else self.agent)
@@ -90,6 +101,8 @@ class SetupAnswers:
                     (label for name, label, _ in ACCESS_CHOICES if name == self.max_access), self.max_access
                 ),
             ),
+            ("Model", self.model or "the CLI's default"),
+            ("Effort", self.effort or "the CLI's default"),
             ("Reached by", self.tunnel_label()),
             ("Your name", self.owner or "-"),
         ]
@@ -181,6 +194,26 @@ class Prompter:
                     ui.answered(question, "Yes" if value else "No")
                 return value
             say("  Please answer y or n.")
+
+    def choose_many(
+        self, question: str, options: Sequence[str], chosen: Sequence[int] = (), hints: Sequence[str] = ()
+    ) -> list[int]:
+        """Several options at once; without a terminal, numbers separated by commas."""
+        if self.interactive:
+            return ui.multi_select(question.strip(), options, chosen, hints)
+        say(question)
+        for index, option in enumerate(options, 1):
+            hint = hints[index - 1] if index - 1 < len(hints) else ""
+            say(f"  {index}) {option}" + (f"  {hint}" if hint else ""))
+        default = ",".join(str(i + 1) for i in chosen)
+        while True:
+            answer = self.ask("Choose (numbers, comma-separated)", default)
+            parts = [p.strip() for p in answer.split(",") if p.strip()]
+            if all(p.isdigit() and 1 <= int(p) <= len(options) for p in parts):
+                return sorted({int(p) - 1 for p in parts})
+            say(f"  Type numbers from 1 to {len(options)}, for example 1,3.")
+            if self.eof:
+                return list(chosen)
 
     def choose(
         self, question: str, options: Sequence[str], default: int = 0, hints: Sequence[str] = ()
@@ -326,6 +359,98 @@ def _check_login(prompt: Prompter, agent: AgentSpec, binary: str, run: Callable[
         run(argv)
 
 
+# ── Step 2: model and effort ──────────────────────────────────────────────────
+
+
+def _menu_models(catalog: ModelCatalog, keep: str) -> list[ModelChoice]:
+    """At most MODEL_MENU_SIZE models, with the default and ``keep`` always in."""
+    models = list(catalog.models)
+    must = [m for m in models if m.id in (catalog.default_model, keep)]
+    rest = [m for m in models if m not in must]
+    return (must + rest)[:MODEL_MENU_SIZE] if len(models) > MODEL_MENU_SIZE else models
+
+
+def _pick_effort(prompt: Prompter, catalog: ModelCatalog, model: str, last: str) -> str:
+    efforts = catalog.efforts_for(model)
+    if not efforts:
+        return ""
+    labels = ["The CLI's default", *efforts]
+    hints = [f"now: {catalog.default_effort}" if catalog.default_effort else ""] + [
+        "your CLI's setting" if e == catalog.default_effort else "" for e in efforts
+    ]
+    wanted = last if last in efforts else ""
+    index = prompt.choose("Effort (how hard it thinks)", labels, labels.index(wanted) if wanted else 0, hints)
+    return "" if index == 0 else efforts[index - 1]
+
+
+def _pick_model(
+    prompt: Prompter,
+    agent: AgentSpec,
+    binary: str,
+    last: SetupAnswers | None,
+    *,
+    catalog: Callable[[AgentSpec, str], ModelCatalog],
+    compare_config: Callable[[], BridgeConfig],
+    measure_model: Callable[[BridgeConfig, str, str], Measured],
+) -> tuple[str, str]:
+    """(model, effort): '' means the CLI's own default. MIA's agent config can still choose another."""
+    with ui.spinner(f"Asking {agent.label} which models it offers"):
+        listed = catalog(agent, binary)
+    if listed.models:
+        ui.ok(f"{len(listed.models)} model{'s' if len(listed.models) != 1 else ''} from {listed.source}")
+    else:
+        ui.warn(f"{agent.label} did not list its models" + (f" ({listed.error})" if listed.error else ""))
+    last_model = last.model if last and last.agent == agent.name else ""
+    last_effort = last.effort if last and last.agent == agent.name else ""
+    while True:
+        shown = _menu_models(listed, last_model)
+        labels = [m.id for m in shown] + ["Type another model id", "The CLI's default"]
+        hints = [
+            " · ".join(
+                part
+                for part in (m.label, "your CLI's default" if m.id == listed.default_model else "")
+                if part and part != m.id
+            )
+            for m in shown
+        ] + [f"{len(listed.models) - len(shown)} more" if len(listed.models) > len(shown) else "", ""]
+        wanted = last_model or listed.default_model
+        default = next((i for i, m in enumerate(shown) if m.id == wanted), len(labels) - 1)
+        index = prompt.choose("Which model?", labels, default, hints)
+        if index == len(shown):
+            model = prompt.ask("Model id (as the CLI names it)", last_model).strip()
+        else:
+            model = shown[index].id if index < len(shown) else ""
+        effort = _pick_effort(prompt, listed, model, last_effort)
+        if (
+            len(shown) > 1
+            and not prompt.eof
+            and prompt.confirm("Compare models by token use for an hour of meeting?", default=False)
+        ):
+            ticked = [i for i, m in enumerate(shown) if m.id == model][:1]
+            ticked += [i for i in range(len(shown)) if i not in ticked][: COMPARE_MAX - len(ticked)]
+            picked = prompt.choose_many(
+                f"Models to compare (one short real turn each, up to {COMPARE_MAX})",
+                [m.id for m in shown],
+                ticked,
+                [m.label for m in shown],
+            )[:COMPARE_MAX]
+            config = compare_config()
+            results = compare(
+                config,
+                [shown[i].id for i in picked],
+                effort,
+                run=lambda c, m, e: measure_model(c, m, e if e in listed.efforts_for(m) else ""),
+            )
+            say("")
+            for line in chart_lines(results, selected=model):
+                say(line)
+            say("")
+            if not prompt.confirm(f"Keep {model or 'the default model'}?", default=True):
+                last_model, last_effort = model, effort
+                continue
+        return model, effort
+
+
 # ── Step 4: how MeetStream reaches this computer ──────────────────────────────
 
 
@@ -453,6 +578,8 @@ def ask_setup(
     detect_ngrok: Callable[[], NgrokSetup] = read_ngrok_setup,
     probe_ngrok: Callable[[str], tuple[str, str]] = probe_ngrok_address,
     offer_install: bool | None = None,
+    catalog: Callable[[AgentSpec, str], ModelCatalog] = catalog_for,
+    measure_model: Callable[[BridgeConfig, str, str], Measured] = measure,
 ) -> SetupAnswers:
     """All the questions, in order. Returns the answers; nothing starts here.
 
@@ -461,12 +588,36 @@ def ask_setup(
     """
     ui.step(1, SETUP_STEPS, "Agent")
     agent, command = _pick_agent(prompt, which, last.agent if last else "", run, offer_install)
-    binary = checks.resolve_binary(agent)
+    binary = which(agent.binary)  # the same lookup _pick_agent used (tests pass a pretend PATH)
+    if binary and not Path(binary).is_file():
+        binary = None
     if binary and not command:
         _check_login(prompt, agent, binary, run)
 
-    ui.step(2, SETUP_STEPS, "Folder")
+    ui.step(2, SETUP_STEPS, "Model")
     default_dir = last.workdir if last else (cwd or str(Path.cwd()))
+    model = effort = ""
+    if command:
+        ui.note("A custom command picks its own model.")
+    elif binary is None:
+        ui.note(f"{agent.label} is not installed yet, so it uses its own default model.")
+    else:
+        model, effort = _pick_model(
+            prompt,
+            agent,
+            binary,
+            last,
+            catalog=catalog,
+            compare_config=lambda: BridgeConfig(
+                agent=agent,
+                binary=binary,
+                workdir=Path(default_dir) if Path(default_dir).is_dir() else Path.home(),
+                owner=os.environ.get("USER", "") or "the user",
+            ),
+            measure_model=measure_model,
+        )
+
+    ui.step(3, SETUP_STEPS, "Folder")
     while True:
         workdir = str(Path(prompt.ask("Folder your agent works in", default_dir)).expanduser().resolve())
         check = checks.check_workdir(Path(workdir))
@@ -474,7 +625,7 @@ def ask_setup(
             break
         ui.fail(check.message)
 
-    ui.step(3, SETUP_STEPS, "Access")
+    ui.step(4, SETUP_STEPS, "Access")
     ui.note("The most this computer allows. Your MIA agent's settings can only lower it.")
     access_index = prompt.choose(
         "Most access this computer allows",
@@ -483,10 +634,10 @@ def ask_setup(
         [hint for _, _, hint in ACCESS_CHOICES],
     )
 
-    ui.step(4, SETUP_STEPS, "Tunnel")
+    ui.step(5, SETUP_STEPS, "Tunnel")
     tunnel, tunnel_url = _pick_tunnel(prompt, which, last, detect_ngrok, probe_ngrok)
 
-    ui.step(5, SETUP_STEPS, "Your name")
+    ui.step(6, SETUP_STEPS, "Your name")
     owner = prompt.ask(
         "Your name as it shows in meetings", last.owner if last else os.environ.get("USER", "")
     )
@@ -498,4 +649,6 @@ def ask_setup(
         tunnel=tunnel,
         tunnel_url=tunnel_url,
         owner=owner,
+        model=model,
+        effort=effort,
     )
