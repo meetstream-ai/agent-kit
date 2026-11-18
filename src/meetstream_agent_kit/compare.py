@@ -63,9 +63,19 @@ def measure(config: BridgeConfig, model: str, effort: str) -> Measured:
         report = Path(tempfile.mkstemp(prefix="msak-usage-", suffix=".json")[1])
         argv += [config.agent.usage_file_flag, str(report)]
     try:
-        result: RunResult = run_once(
-            config.agent, argv, stdin_text, str(config.workdir), min(config.timeout_s, COMPARE_TIMEOUT_S)
-        )
+        with ui.Stages.cold(model or config.agent.label) as stages:
+            result: RunResult = run_once(
+                config.agent,
+                argv,
+                stdin_text,
+                str(config.workdir),
+                min(config.timeout_s, COMPARE_TIMEOUT_S),
+                on_stage=stages.on_stage,
+            )
+            if result.error or not result.answer:
+                stages.fail("failed", result.total_ms)
+            else:
+                stages.reach(2, result.total_ms)
         usage = result.usage
         if report is not None:
             usage = usage_from_lines([report.read_text(encoding="utf-8").replace("\n", " ")]) or usage
@@ -88,8 +98,7 @@ def compare(
     """Measure each model in turn, with a line per model as it finishes."""
     results = []
     for model in models:
-        with ui.spinner(f"{model or 'default model'}: one sample turn"):
-            measured = run(config, model, effort)
+        measured = run(config, model, effort)
         if measured.usage:
             ui.ok(
                 f"{model or 'default'}  {human_tokens(measured.usage.input)} in · "

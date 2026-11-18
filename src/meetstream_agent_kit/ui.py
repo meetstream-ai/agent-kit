@@ -11,12 +11,16 @@ from __future__ import annotations
 import contextlib
 import itertools
 import os
+import random
 import select
 import shutil
 import sys
 import threading
+import time
+import unicodedata
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from types import TracebackType
 from typing import Final
 
 _CODES: Final[dict[str, str]] = {
@@ -33,6 +37,7 @@ _CODES: Final[dict[str, str]] = {
 _SPINNER: Final = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _ANSWER_MARK: Final = "\u203a"  # right-pointing quote between a question and its answer
 _POINTER: Final = "\u276f"  # heavy pointer before the highlighted menu option
+_rng = random.Random()  # noqa: S311 - display wording only
 
 
 def is_interactive() -> bool:
@@ -172,6 +177,129 @@ def spinner(text: str) -> Iterator[None]:
         thread.join()
         sys.stdout.write("\r\x1b[2K")
         sys.stdout.flush()
+
+
+class Stages:
+    """One live line, with ticks only at observed boundaries. Times are cumulative milliseconds."""
+
+    def __init__(self, stages: Sequence[tuple[str, str]], *, events: Sequence[str] = ()) -> None:
+        if not stages:
+            raise ValueError("at least one stage is required")
+        self.labels = tuple(stages)
+        self._events = tuple(events)
+        self._completed: dict[int, float] = {}
+        self._current = 0
+        self._failure: tuple[str, float] | None = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._interactive = False
+        self._started = 0.0
+
+    @classmethod
+    def cold(cls, agent: str, *, rng: random.Random | None = None) -> Stages:
+        """Pick reproducible verbs for a cold CLI turn."""
+        picker = rng if rng is not None else _rng
+        waking = picker.choice(("Waking up", "Stretching", "Booting"))
+        thinking = picker.choice(("Pondering", "Noodling", "Mulling it over", "Percolating", "Ruminating"))
+        answering = picker.choice(("Answering", "Composing", "Spelling it out"))
+        return cls(
+            [(f"{waking} {agent}", f"Woke {agent}"), (thinking, "First words"), (answering, "Answered")],
+            events=("output", "first_delta"),
+        )
+
+    def __enter__(self) -> Stages:
+        self._started = time.monotonic()
+        self._interactive = is_interactive()
+        if self._interactive:
+            self._thread = threading.Thread(target=self._spin, daemon=True)
+            self._thread.start()
+        return self
+
+    def reach(self, index: int, ms: float) -> None:
+        """Complete only this stage; missing earlier boundaries stay absent."""
+        if not 0 <= index < len(self.labels):
+            raise IndexError(index)
+        with self._lock:
+            if self._failure is None and index not in self._completed:
+                self._completed[index] = ms
+                self._current = max(self._current, index + 1)
+
+    def on_stage(self, event: str, ms: float) -> None:
+        """Map observed events to ticks. The caller checks success before ticking the final stage."""
+        if event in self._events:
+            self.reach(self._events.index(event), ms)
+
+    def fail(self, reason: str, ms: float | None = None) -> None:
+        """Stop at the current stage without inventing a completion time."""
+        with self._lock:
+            self._failure = (reason, self._elapsed() if ms is None else ms)
+
+    def _elapsed(self) -> float:
+        return (time.monotonic() - self._started) * 1000
+
+    def _line(self, frame: str = "") -> str:
+        with self._lock:
+            parts: list[tuple[str, str]] = []
+            for index, ms in sorted(self._completed.items()):
+                mark = "✓ " if self._interactive else ""
+                parts.append((f"{mark}{self.labels[index][1]} {ms / 1000:.1f} s", "green"))
+            if self._failure is not None:
+                reason, ms = self._failure
+                current = self.labels[min(self._current, len(self.labels) - 1)][0]
+                text = (
+                    f"✗ {current} {ms / 1000:.1f} s"
+                    if self._interactive
+                    else f"stopped at {current} after {ms / 1000:.1f} s"
+                )
+                parts.append((text + (f" ({reason})" if reason else ""), "red"))
+            elif frame and self._current < len(self.labels):
+                parts.append(
+                    (f"{frame} {self.labels[self._current][0]}… {self._elapsed() / 1000:.1f} s", "cyan")
+                )
+        if not self._interactive:
+            return "  " + " · ".join(text for text, _ in parts)
+        # Clip before colouring, reserving a column so terminals never wrap.
+        room = width() - 3
+        line = "  "
+        for index, (text, style) in enumerate(parts):
+            text = (" · " if index else "") + text
+            clipped = ""
+            for char in text:
+                cells = (
+                    0
+                    if unicodedata.combining(char)
+                    else 2
+                    if unicodedata.east_asian_width(char) in "WF"
+                    else 1
+                )
+                if cells > room:
+                    break
+                clipped += char
+                room -= cells
+            line += paint(clipped, style)
+            if clipped != text:
+                break
+        return line
+
+    def _spin(self) -> None:
+        for frame in itertools.cycle(_SPINNER):
+            sys.stdout.write("\r\x1b[2K" + self._line(frame))
+            sys.stdout.flush()
+            if self._stop.wait(1 / 12):
+                break
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        if exc_type is not None:
+            self.fail("interrupted" if exc_type is KeyboardInterrupt else "failed")
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        if self._interactive:
+            sys.stdout.write("\r\x1b[2K")
+        _write(self._line())
 
 
 # ── Questions on a terminal ──────────────────────────────────────────────────

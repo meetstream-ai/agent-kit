@@ -302,8 +302,16 @@ def _test_turn(config: BridgeConfig) -> RunResult:
         config.effort,
     )
     timeout = min(config.timeout_s, TEST_TURN_TIMEOUT_S)
-    with ui.spinner(f"Asking {config.agent.label} for one short answer"):
-        return run_once(config.agent, argv, stdin_text, str(config.workdir), timeout)
+    with ui.Stages.cold(config.agent.label) as stages:
+        result = run_once(
+            config.agent, argv, stdin_text, str(config.workdir), timeout, on_stage=stages.on_stage
+        )
+        problem = checks.diagnose_turn(config.agent, result.answer, result.error, result.stderr_tail, timeout)
+        if problem is not None:
+            stages.fail("failed", result.total_ms)
+        else:
+            stages.reach(2, result.total_ms)
+        return result
 
 
 def _check_agent(
@@ -356,10 +364,18 @@ def _check_warm_mode(
     if not warm_check.applies_to(config):
         return "ok"
     while True:
-        with ui.spinner(
-            f"Starting {config.agent.label} the way meetings do (ACP) and calling a meeting tool"
-        ):
-            result = check(config, turn=True)
+        labels = [(f"Starting {config.agent.label} (ACP)", "Session ready")]
+        events = ["ready"]
+        if config.agent.acp_mcp:
+            labels.append(("Calling a meeting tool", "Tool called"))
+            events.append("tool_call")
+        labels.append(("Answering", "Answered"))
+        with ui.Stages(labels, events=events) as stages:
+            result = check(config, turn=True, on_stage=stages.on_stage)
+            if result.ok:
+                stages.reach(len(labels) - 1, result.total_ms)
+            else:
+                stages.fail("failed", result.total_ms)
         if result.ok:
             ui.ok(f"{result.message} ({result.total_ms / 1000:.1f} s)")
             return "ok"
@@ -529,6 +545,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         rows.append(
             {
                 "kind": "cold",
+                "first_line_ms": None if result.first_line_ms is None else round(result.first_line_ms, 1),
                 "first_output_ms": None
                 if result.first_output_ms is None
                 else round(result.first_output_ms, 1),
