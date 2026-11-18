@@ -77,7 +77,8 @@ def short_path(path: str) -> str:
 
 
 def width() -> int:
-    return max(20, min(shutil.get_terminal_size((88, 24)).columns, 100))
+    columns = shutil.get_terminal_size((88, 24)).columns or 88  # 0 = a terminal with no size set
+    return max(20, min(columns, 100))
 
 
 # ── Status lines ──────────────────────────────────────────────────────────────
