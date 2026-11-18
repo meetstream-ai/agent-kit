@@ -363,7 +363,6 @@ def test_setup_picks_model_and_effort_and_saves_them(
         "4",  # Antigravity
         "",  # model: the preselected CLI default (gemini-3.8-flash-low)
         "3",  # effort: medium (1 = the CLI's default, 2 = low, 3 = medium)
-        "",  # compare? no
         "",
         "",
         "4",
@@ -392,14 +391,10 @@ def test_setup_compares_models_then_lets_you_pick_again(
 
     replies = _replies(
         "4",  # Antigravity
-        "",  # model: gemini-3.8-flash-low
-        "2",  # effort: low
-        "y",  # compare
+        "6",  # Measure live, before choosing a model or effort
         "1,2",  # the first two in the menu: the CLI's order (high, low, sonnet)
-        "n",  # do not keep: pick again
         "3",  # claude-sonnet-4-6
         "1",  # effort: the CLI's default
-        "n",  # no second comparison
         "",
         "",
         "4",
@@ -414,7 +409,7 @@ def test_setup_compares_models_then_lets_you_pick_again(
         measure_model=fake_measure,
     )
     out = capsys.readouterr().out
-    assert measured == [("gemini-3.8-flash-high", "low"), ("gemini-3.8-flash-low", "low")]  # the CLI's order
+    assert measured == [("gemini-3.8-flash-high", ""), ("gemini-3.8-flash-low", "")]  # CLI effort default
     assert "Estimated tokens for one hour of meeting" in out
     assert answers.model == "claude-sonnet-4-6"
     assert answers.effort == ""

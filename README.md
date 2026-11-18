@@ -116,7 +116,8 @@ It walks you through seven short steps, with arrow-key menus: which agent should
 answer (it lists the ones it finds on your computer and checks they are signed
 in; pick one that is missing and it shows the vendor's official install command
 and offers to run it), which model and effort it uses (listed by the CLI itself,
-with an optional comparison of estimated tokens per hour of meeting), the folder
+each with an estimated tokens-per-hour bar, what it can do in a meeting, and a
+"Measure live" option that runs one short turn per model), the folder
 it works in, the most access this computer allows, how
 MeetStream reaches your computer, and your name. Then it tests your agent.
 

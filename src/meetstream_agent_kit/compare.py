@@ -1,6 +1,6 @@
 """Compare models by token use: one real, short meeting turn per model, projected to an hour.
 
-Used by setup ("Compare models?") and ``meetstream-agent-kit bench --compare``.
+Used by setup ("Measure live") and ``meetstream-agent-kit bench --compare``.
 Each model answers the same small meeting turn, read-only, through the CLI's
 one-run mode. The CLI's own usage numbers become a one-hour estimate (see
 :mod:`meetstream_agent_kit.usage` for the assumption) and a bar chart.
@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from meetstream_agent_kit import ui
+from meetstream_agent_kit import estimates, ui
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.oneshot import RunResult, build_oneshot_argv, run_once
 from meetstream_agent_kit.prompts import format_turn, system_prompt
@@ -44,6 +44,7 @@ class Measured:
     usage: Usage | None
     seconds: float
     error: str = ""
+    first_output_ms: float | None = None
 
 
 def measure(config: BridgeConfig, model: str, effort: str) -> Measured:
@@ -84,8 +85,11 @@ def measure(config: BridgeConfig, model: str, effort: str) -> Measured:
     finally:
         if report is not None:
             report.unlink(missing_ok=True)
-    error = "" if usage else (result.error or "the CLI reported no token usage")
-    return Measured(model, usage, result.total_ms / 1000, error)
+    error = result.error or ("" if result.answer else "the CLI returned no answer")
+    error = error or ("" if usage else "the CLI reported no token usage")
+    measured = Measured(model, usage, result.total_ms / 1000, error, result.first_output_ms)
+    estimates.save(config.agent.name, model, measured)
+    return measured
 
 
 def compare(
@@ -99,7 +103,8 @@ def compare(
     results = []
     for model in models:
         measured = run(config, model, effort)
-        if measured.usage:
+        estimates.save(config.agent.name, model, measured)
+        if measured.usage and not measured.error:
             ui.ok(
                 f"{model or 'default'}  {human_tokens(measured.usage.input)} in · "
                 f"{human_tokens(measured.usage.output)} out  ({measured.seconds:.1f} s)"
@@ -120,7 +125,7 @@ def chart_lines(
     """The estimate as horizontal bars: model, tokens per hour, and cost where the CLI gives a price."""
     a = assumptions or Assumptions()
     rows: list[tuple[str, HourEstimate, float]] = [
-        (m.model, project_hour(m.usage, a), m.seconds) for m in results if m.usage
+        (m.model, project_hour(m.usage, a), m.seconds) for m in results if m.usage and not m.error
     ]
     if not rows:
         return ["  No model reported token usage, so there is nothing to chart."]

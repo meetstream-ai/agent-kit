@@ -24,10 +24,10 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final
 
-from meetstream_agent_kit import __version__, checks, ui, warm_check
+from meetstream_agent_kit import __version__, checks, estimates, ui, warm_check
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
-from meetstream_agent_kit.compare import chart_lines, compare
+from meetstream_agent_kit.compare import Measured, chart_lines, compare
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import DEFAULT_PORT, DEFAULT_TURN_TIMEOUT_S
@@ -311,6 +311,13 @@ def _test_turn(config: BridgeConfig) -> RunResult:
             stages.fail("failed", result.total_ms)
         else:
             stages.reach(2, result.total_ms)
+            estimates.save(
+                config.agent.name,
+                config.model,
+                Measured(
+                    config.model, result.usage, result.total_ms / 1000, first_output_ms=result.first_output_ms
+                ),
+            )
         return result
 
 
