@@ -6,6 +6,6 @@ CLI, Antigravity, Muse Code, OpenClaw or any command) write MIA's answers, with
 your own login. See the README for setup and the security model.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = ["__version__"]

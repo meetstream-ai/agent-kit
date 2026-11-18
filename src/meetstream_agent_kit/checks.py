@@ -10,15 +10,17 @@ from __future__ import annotations
 import errno
 import json
 import os
+import shlex
 import shutil
 import socket
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from meetstream_agent_kit.agents import AgentSpec
+from meetstream_agent_kit.parsers import looks_like_auth_error
 
 
 @dataclass(frozen=True)
@@ -134,3 +136,59 @@ def check_port(home: Path, port: int) -> Check:
                 return port_in_use_message(home, port)
             return Check("port", False, f"cannot listen on 127.0.0.1:{port}: {exc.strerror}")
     return Check("port", True, f"127.0.0.1:{port} is free")
+
+
+# ── Why a test turn failed ────────────────────────────────────────────────────
+
+TurnProblem = Literal["not_installed", "signed_out", "timeout", "failed", "empty"]
+
+
+@dataclass(frozen=True)
+class TurnDiagnosis:
+    kind: TurnProblem
+    message: str
+    fix: str
+    detail: str = ""
+    """What the CLI itself said (error text or its last stderr lines)."""
+
+
+def login_argv(agent: AgentSpec) -> list[str] | None:
+    """The sign-in command as argv, when it can be run as is (no placeholders)."""
+    text = agent.relogin.split("(")[0].strip()
+    if not text or "<" in text:
+        return None
+    return shlex.split(text)
+
+
+def diagnose_turn(
+    agent: AgentSpec, answer: str, error: str | None, stderr_tail: str = "", timeout_s: float = 0
+) -> TurnDiagnosis | None:
+    """None when the agent answered; otherwise the most likely reason and its fix."""
+    if answer.strip() and not error:
+        return None
+    said = (error or "").strip()
+    tail = stderr_tail.strip()
+    detail = "\n".join([said] * bool(said) + [tail] * bool(tail and tail not in said))
+    sign_in = f"Sign in with: {agent.relogin}" if agent.relogin else "Sign in to the CLI, then try again."
+    if said.startswith("agent CLI not found"):
+        return TurnDiagnosis("not_installed", f"{agent.label} is not installed", agent.install_hint)
+    if looks_like_auth_error(f"{said}\n{tail}"):
+        return TurnDiagnosis("signed_out", f"{agent.label} is signed out", sign_in, detail)
+    if "timed out" in said:
+        limit = f" within {int(timeout_s)} s" if timeout_s else ""
+        return TurnDiagnosis(
+            "timeout",
+            f"{agent.label} did not answer{limit}",
+            f"It may be waiting for a sign-in or a permission prompt. Run `{agent.binary}` on its own once "
+            "to see what it asks for, then try again.",
+            tail,
+        )
+    if said:
+        return TurnDiagnosis("failed", f"{agent.label} failed", sign_in, detail)
+    return TurnDiagnosis(
+        "empty",
+        f"{agent.label} ran but sent back no answer",
+        f"Often a sign-in it is waiting for. {sign_in}"
+        + ("" if tail else f" If it still says nothing, run `{agent.binary}` on its own once."),
+        tail,
+    )

@@ -4,6 +4,34 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - Unreleased
+
+### Fixed
+
+- Antigravity CLI answers were dropped: its `stream-json` lines name their kind
+  in `event`, and the bridge read only `type`, so every turn (the setup test and
+  meetings) came back empty. Both keys are read now, and the `CANCELED`,
+  `INTERRUPTED` and `INVALID` result states count as errors.
+
+### Changed
+
+- Setup looks like a modern agent CLI: a header, numbered steps, arrow-key
+  menus, coloured ✓/✗ checks, a spinner for slow steps, and a summary of what
+  is running with the pairing token and Bridge URL each on its own line.
+  Piped or redirected runs keep plain numbered questions (`NO_COLOR` and
+  `FORCE_COLOR` are honoured). Still no dependencies.
+- ngrok in setup: no more "have you connected ngrok?" question. Setup reads
+  the ngrok config (`ngrok config check`), knows whether an authtoken is saved,
+  and uses a domain named there (or reserved on the account, when an ngrok API
+  key is configured). Otherwise it starts ngrok once against an empty local
+  port to see which address the account gets, and keeps it when it stays the
+  same. Only then does it ask, saying where to find the domain and what blank
+  means. Missing ngrok or authtoken: the one command to run, then Check again.
+- When the setup test turn fails, setup names the reason (not installed,
+  signed out, timed out, failed, or an empty reply, with the CLI's last stderr
+  lines), offers to run the sign-in command and tests again, or starts anyway
+  or quits. Ended input never loops on a default answer.
+
 ## [0.3.0] - 2026-11-18
 
 First public release, as the `meetstream-agent-kit` package.

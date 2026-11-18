@@ -73,21 +73,31 @@ uv tool install meetstream-agent-kit
 meetstream-agent-kit
 ```
 
-It asks a few questions: which agent should answer (it lists the ones it finds
-on your computer and checks they are signed in), the folder it works in, the
-most access this computer allows, and how MeetStream reaches your computer:
+It walks you through six short steps, with arrow-key menus: which agent should
+answer (it lists the ones it finds on your computer and checks they are signed
+in), the folder it works in, the most access this computer allows, how
+MeetStream reaches your computer, and your name. Then it tests your agent.
 
 - **Cloudflare quick tunnel:** no account needed. The address changes each time it starts.
-- **ngrok:** needs a free ngrok account. A free static domain keeps one address.
+- **ngrok:** needs a free ngrok account. Setup reads your ngrok config, so it
+  knows whether ngrok is connected to your account and which domain you use,
+  and tells you the one command to run when it is not.
+  A static domain (free accounts get one, under **Domains** in the ngrok
+  dashboard) keeps one address.
 - **An address you already have**, for example a named Cloudflare tunnel.
 
-It then runs one short test turn with your agent and asks **Start now?** On yes,
-it starts the bridge and the tunnel and prints the two things to paste:
+The last step runs one short test turn with your agent. If it does not answer,
+setup says why (not installed, signed out, timed out, or an empty reply, with
+what the CLI printed), offers to run the sign-in command and tests again. Then
+it asks **Start now?** On yes, it starts the bridge and the tunnel and prints
+the two things to paste, each on its own line:
 
 ```text
-Paste these in the MeetStream dashboard:
-  Pairing token  (Integrations > Models > Local agent, shown once):  msak_…
-  Bridge URL     (Agents > your agent > Model > Your agent):          https://….trycloudflare.com
+Next: paste these in the MeetStream dashboard
+  1. Pairing token  Integrations > Models > Local agent (shown once)
+     msak_…
+  2. Bridge URL     Agents > your agent > Model > Your agent
+     https://….trycloudflare.com
 ```
 
 Next time, run `meetstream-agent-kit` and press Enter to start with the same answers.
@@ -215,7 +225,7 @@ Found a problem? See [SECURITY.md](SECURITY.md).
 
 ```text
 $ meetstream-agent-kit doctor --agent claude
-MeetStream Agent Kit 0.3.0 doctor
+MeetStream Agent Kit 0.3.1 doctor
   ✓ python: Python 3.12.8
   ✓ config: /Users/you/.config/meetstream-agent-kit
   ✓ workdir: /Users/you/code/my-project
@@ -233,6 +243,8 @@ MeetStream Agent Kit 0.3.0 doctor
 | `the bridge is already running on port 8787` | use that one, or stop it first |
 | `Claude Code not found` | install it (`npm install -g @anthropic-ai/claude-code`), or pass `--binary` |
 | `login: expired` | run the sign-in command from [Supported agents](#supported-agents); MIA picks it up within 30 seconds |
+| setup: `ngrok is not connected to an ngrok account` | copy your authtoken from the ngrok dashboard and run `ngrok config add-authtoken <your authtoken>`, then pick **Check again** |
+| setup: `… ran but sent back no answer` | usually a sign-in the CLI is waiting for: pick **Sign in now**, or run the agent once on its own to see what it asks |
 | MIA says your agent is not reachable | check that `serve` and the tunnel are both running, and that MIA has the tunnel's current address |
 
 ## Commands
