@@ -22,6 +22,7 @@ from typing import Any, Final
 from meetstream_agent_kit import __version__
 from meetstream_agent_kit.access import effective_access
 from meetstream_agent_kit.activation import ActivationGate
+from meetstream_agent_kit.alerts import failure_kind, message_for
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import (
@@ -392,6 +393,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         agent = self.server.config.agent
         try:
             for event in session.run_turn(format_turn(messages)):
+                kind = failure_kind(event)
+                if kind:  # MIA stays quiet; the owner hears it on their desktop, once per kind
+                    if event["type"] == "error":
+                        event["reason"] = kind
+                    session.alert_once(kind, message_for(kind, agent, str(event.get("message") or "")))
                 if event["type"] == "error" and event.get("code") == "auth_required":
                     self.server.login.mark_expired(str(event.get("message") or ""))
                     event["relogin"] = agent.relogin

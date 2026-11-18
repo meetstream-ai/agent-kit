@@ -113,6 +113,7 @@ def _build_config(args: argparse.Namespace, *, max_access: str = "readonly") -> 
         model=args.model or "",
         effort=args.effort or "",
         prime=not getattr(args, "no_prime", False),
+        ignore_rules=bool(getattr(args, "ignore_rules", False)),
         debug=bool(getattr(args, "debug", False)) or os.environ.get("MS_AGENT_KIT_DEBUG") == "1",
     )
 
@@ -300,6 +301,7 @@ def _test_turn(config: BridgeConfig) -> RunResult:
         config.binary,
         config.model,
         config.effort,
+        config.ignore_rules,
     )
     timeout = min(config.timeout_s, TEST_TURN_TIMEOUT_S)
     with ui.Stages.cold(config.agent.label) as stages:
@@ -412,6 +414,7 @@ def _setup_namespace(answers: SetupAnswers) -> argparse.Namespace:
         model=answers.model or None,
         effort=answers.effort or None,
         no_prime=False,
+        ignore_rules=answers.ignore_rules == "yes",
     )
 
 
@@ -547,6 +550,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
             config.binary,
             config.model,
             config.effort,
+            config.ignore_rules,
         )
         result = run_once(config.agent, argv, stdin_text, str(config.workdir), config.timeout_s)
         rows.append(
@@ -672,6 +676,11 @@ def build_parser() -> argparse.ArgumentParser:
         "shell or file action) or full (no prompts). MIA's agent config can only lower it",
     )
     serve.add_argument("--no-prime", action="store_true", help="skip the warm-up turn at meeting start")
+    serve.add_argument(
+        "--ignore-rules",
+        action="store_true",
+        help="skip the work folder's project rules (CLAUDE.md, AGENTS.md...) where the agent CLI can",
+    )
     serve.add_argument(
         "--debug",
         action="store_true",

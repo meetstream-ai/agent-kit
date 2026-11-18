@@ -41,6 +41,7 @@ def build_oneshot_argv(
     binary: str | None = None,
     model: str = "",
     effort: str = "",
+    ignore_rules: bool = False,
 ) -> tuple[list[str], str | None]:
     """Return ``(argv, stdin_text)`` for one non-interactive run.
 
@@ -52,6 +53,10 @@ def build_oneshot_argv(
     argv += agent.full_args if access == "full" else agent.readonly_args
     argv += agent.model_args(model)
     argv += agent.effort_flags(effort)
+    if ignore_rules and agent.ignore_rules_args:
+        # After a subcommand (codex exec) the options go right behind it; otherwise at the end.
+        at = 2 if agent.oneshot_args and not agent.oneshot_args[0].startswith("-") else len(argv)
+        argv[at:at] = list(agent.ignore_rules_args)
     return argv, (None if via_arg else prompt)
 
 
