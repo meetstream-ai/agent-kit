@@ -31,6 +31,8 @@ class BridgeConfig:
     quiet: bool = False
     debug: bool = False
     """Log every message type the agent sends (``--debug`` or ``MS_AGENT_KIT_DEBUG=1``); never their text."""
+    meeting_notes: str = ""
+    """The owner's MEETING.md, added to the bridge's rules on the first turn ('' = none)."""
     ignore_rules: bool = False
     """Skip the work folder's project rules where the agent CLI can (see ``AgentSpec.ignore_rules_args``)."""
     notify: Callable[[str, str], None] = notify

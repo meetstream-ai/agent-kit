@@ -44,7 +44,14 @@ ACCESS_SCOPE: Final[dict[str, str]] = {
 }
 """What the agent may do outside the meeting, by the access level the meeting runs at."""
 
-_WRAPPER_TAGS: Final = ("<meeting_turns", "</meeting_turns", "<mia_instructions", "</mia_instructions")
+_WRAPPER_TAGS: Final = (
+    "<meeting_turns",
+    "</meeting_turns",
+    "<mia_instructions",
+    "</mia_instructions",
+    "<owner_meeting_notes",
+    "</owner_meeting_notes",
+)
 
 
 def clean(value: object, limit: int = MAX_FIELD_CHARS) -> str:
@@ -55,12 +62,14 @@ def clean(value: object, limit: int = MAX_FIELD_CHARS) -> str:
     return text.strip()
 
 
-def system_prompt(owner: str, instructions: str, access: str = "readonly") -> str:
-    """The bridge's rules for this access level, followed by MIA's configured instructions."""
+def system_prompt(owner: str, instructions: str, access: str = "readonly", notes: str = "") -> str:
+    """The bridge's rules for this access level, the owner's MEETING.md notes, then MIA's instructions."""
     who = clean(owner, 80) or "the user"
     scope = ACCESS_SCOPE.get(access, ACCESS_SCOPE["readonly"]).format(owner=who)
+    owner_notes = clean(notes, 4000)
     return (
         BRIDGE_RULES.format(owner=who, scope=scope)
+        + (f"\n\n<owner_meeting_notes>\n{owner_notes}\n</owner_meeting_notes>" if owner_notes else "")
         + "\n\n<mia_instructions>\n"
         + clean(instructions, MAX_INSTRUCTIONS_CHARS)
         + "\n</mia_instructions>"

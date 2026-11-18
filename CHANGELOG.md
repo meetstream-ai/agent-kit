@@ -54,6 +54,18 @@ All notable changes to this package. The format follows
   `--ignore-rules` in single runs (in meetings `hermes acp` has no such
   switch: only its auto-loaded skills are skipped, so use the workspace).
   Antigravity has no switch.
+- **Meeting context** (setup step 3): the table of everything your agent reads
+  on every meeting turn (the folder's project rules, the agent's own memory
+  such as `~/.claude/CLAUDE.md` or `~/.hermes/SOUL.md`, and your MEETING.md),
+  each with its size and tokens, and the total in the summary box ("context:
+  meeting only · 0.4k tokens/turn"). For a folder with project rules: Meeting
+  only, Include this project's rules, or Custom (tick what goes in).
+- **MEETING.md**: your own meeting instructions, in the meeting workspace,
+  created with a short default. The bridge adds it to its rules for every
+  agent (`<owner_meeting_notes>`, at most 4,000 characters). Edit it with
+  `meetstream-agent-kit context edit`; `context show` prints the effective
+  context and its token estimate; `serve --no-meeting-md` leaves it out.
+  `doctor` has a `context` line that fails above 4,000 tokens per turn.
 - Setup's test turns show live stages with real timings instead of a silent
   wait: "Woke Codex 0.3 s · First words 5.5 s · Answered 6.5 s", with rotating
   verbs (Pondering, Noodling, ...). The warm ACP check shows "Session ready ·

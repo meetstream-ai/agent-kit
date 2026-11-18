@@ -120,7 +120,9 @@ class MeetingSession:
 
     def rules(self, access: AccessLevel | None = None) -> str:
         """The agent's instructions, for the access level the agent really runs at."""
-        return system_prompt(self.config.owner, self.instructions, access or self.access)
+        return system_prompt(
+            self.config.owner, self.instructions, access or self.access, self.config.meeting_notes
+        )
 
     def changed_fields(self, other: MeetingSession) -> list[str]:
         """Which parts of the meeting's setup differ from ``other`` (for the restart log line)."""

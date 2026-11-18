@@ -361,6 +361,7 @@ MeetStream Agent Kit 0.3.3 doctor
 | `revoke ID` | revoke a pairing; its token stops working at once |
 | `serve [options]` | run the bridge for MIA |
 | `doctor [options]` | check this computer and explain each fix; for ACP agents it also starts the warm session and reports the meeting tools it loaded (`--no-warm` skips that) |
+| `context [show\|edit]` | what your agent reads on every meeting turn, with token estimates; edit your MEETING.md (your own meeting instructions) |
 | `bench [options]` | time cold and warm turns for your agent; `--compare` charts estimated tokens (and cost, where the CLI reports one) per hour of meeting for each model (`--models a,b`, `--turns-per-hour N`) |
 
 `serve`, `doctor` and `bench` take `--agent`, `--command`, `--binary`,

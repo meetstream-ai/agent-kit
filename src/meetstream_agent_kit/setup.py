@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from meetstream_agent_kit import checks, estimates, ui
+from meetstream_agent_kit import checks, context, estimates, ui
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
 from meetstream_agent_kit.compare import Measured, chart_lines, compare, measure
@@ -61,9 +61,7 @@ PROJECT_RULE_FILES: Final = (
 """Files agent CLIs read from the work folder on every turn."""
 
 
-def meeting_workspace() -> Path:
-    """The default work folder: empty, so no project's rules ride along on every meeting turn."""
-    return Path.home() / "MeetStream Agent"
+meeting_workspace = context.meeting_workspace
 
 
 def project_rules(folder: Path) -> list[tuple[str, int]]:
@@ -103,6 +101,8 @@ class SetupAnswers:
     owner: str
     model: str = ""
     """Empty: the CLI's own default model."""
+    meeting_md: str = ""
+    """"no": leave MEETING.md out of meetings."""
     ignore_rules: str = ""
     """"yes": skip the work folder's project rules in meetings, where the agent CLI can."""
     effort: str = ""
@@ -119,6 +119,15 @@ class SetupAnswers:
             "none": "no tunnel",
         }.get(self.tunnel, self.tunnel)
 
+    def context_label(self) -> str:
+        agent = AGENTS.get(self.agent) or custom_agent(self.command or "custom")
+        return context.summary(
+            agent,
+            Path(self.workdir),
+            ignore_rules=self.ignore_rules == "yes",
+            use_meeting_md=self.meeting_md != "no",
+        )
+
     def describe(self) -> str:
         return f"{self.agent_label()}, {self.max_access}, folder {self.workdir}, {self.tunnel_label()}"
 
@@ -134,7 +143,7 @@ class SetupAnswers:
             ),
             ("Model", self.model or "the CLI's default"),
             ("Effort", self.effort or "the CLI's default"),
-            ("Project rules", "ignored in meetings" if self.ignore_rules == "yes" else "read if present"),
+            ("Context", self.context_label()),
             ("Reached by", self.tunnel_label()),
             ("Your name", self.owner or "-"),
         ]
@@ -504,33 +513,51 @@ def _pick_model(
 
 def _review_project_rules(
     prompt: Prompter, agent: AgentSpec, folder: Path, workspace: Path
-) -> tuple[str, bool]:
-    """Warn about project rules files the agent would read on every meeting turn. (folder, ignore)."""
+) -> tuple[str, bool, bool]:
+    """Meeting context for a folder with project rules: (folder, ignore rules, use MEETING.md).
+
+    a) Meeting only: rules ignored where the CLI can, else the meeting workspace.
+    b) Include this project's rules.  c) Custom: pick what goes in.
+    """
     found = project_rules(folder)
     if not found:
-        return str(folder), False
+        return str(folder), False, True
     total = sum(size for _, size in found)
     ui.warn(
         f"This folder has project rules your agent reads on every meeting turn (≈ {total // 4:,} tokens):"
     )
     for name, size in found:
         ui.note(f"{name}  {size / 1024:.1f} KB ≈ {size // 4:,} tokens")
-    options: list[tuple[str, str, str]] = []
-    if agent.ignore_rules_args or agent.ignore_rules_env:
-        options.append(("ignore", "Ignore project rules in meetings", agent.ignore_rules_note))
-    options += [
-        ("workspace", "Use the meeting workspace instead", ui.short_path(str(workspace))),
-        ("keep", "Keep them", "slower, costlier turns"),
-    ]
-    if not (agent.ignore_rules_args or agent.ignore_rules_env):
+    can_skip = bool(agent.ignore_rules_args or agent.ignore_rules_env)
+    if not can_skip:
         ui.note(f"{agent.label} {agent.ignore_rules_note or 'has no switch to skip them'}.")
-    pick = options[
-        prompt.choose("Project rules in meetings", [o[1] for o in options], 0, [o[2] for o in options])
-    ][0]
-    if pick == "workspace":
+    meeting_hint = agent.ignore_rules_note if can_skip else f"use {ui.short_path(str(workspace))} instead"
+    options = [
+        ("meeting", "Meeting only", meeting_hint),
+        ("project", "Include this project's rules", f"≈ {total // 4:,} tokens on every turn"),
+        ("custom", "Custom", "choose what goes in"),
+    ]
+    pick = options[prompt.choose("Meeting context", [o[1] for o in options], 0, [o[2] for o in options])][0]
+    if pick == "meeting" and not can_skip:
         workspace.mkdir(parents=True, exist_ok=True)
-        return str(workspace.resolve()), False
-    return str(folder), pick == "ignore"
+        return str(workspace.resolve()), False, True
+    if pick != "custom":
+        return str(folder), pick == "meeting", True
+    parts = (["This project's rules"] if can_skip else []) + ["My MEETING.md instructions"]
+    keep = prompt.choose_many("What goes into meetings?", parts, list(range(len(parts))))
+    rules_kept = (0 in keep) if can_skip else True
+    return str(folder), can_skip and not rules_kept, (len(parts) - 1) in keep
+
+
+def _show_context(agent: AgentSpec, workdir: str, ignore_rules: bool, use_meeting_md: bool) -> None:
+    folder = Path(workdir)
+    items = context.effective_context(agent, folder, ignore_rules=ignore_rules, use_meeting_md=use_meeting_md)
+    label = context.summary(agent, folder, ignore_rules=ignore_rules, use_meeting_md=use_meeting_md)
+    ui.ok(f"Meeting context: {label}")
+    for row in context.table(items):
+        ui.note(row)
+    where = ui.short_path(str(context.meeting_file()))
+    ui.note(f"Your meeting instructions: {where} (edit with: meetstream-agent-kit context edit)")
 
 
 # ── Step 4: how MeetStream reaches this computer ──────────────────────────────
@@ -699,7 +726,7 @@ def ask_setup(
             measure_model=measure_model,
         )
 
-    ui.step(3, SETUP_STEPS, "Folder")
+    ui.step(3, SETUP_STEPS, "Meeting context")
     workspace = meeting_workspace()
     ui.note(f"{ui.short_path(str(workspace))} is a quiet meeting workspace: no project rules on every turn.")
     ui.note("Type a project folder instead to let your agent see that code.")
@@ -712,7 +739,9 @@ def ask_setup(
         if check.ok:
             break
         ui.fail(check.message)
-    workdir, ignore_rules = _review_project_rules(prompt, agent, Path(workdir), workspace)
+    workdir, ignore_rules, use_meeting_md = _review_project_rules(prompt, agent, Path(workdir), workspace)
+    context.ensure_meeting_file()
+    _show_context(agent, workdir, ignore_rules, use_meeting_md)
 
     ui.step(4, SETUP_STEPS, "Access")
     ui.note("The most this computer allows. Your MIA agent's settings can only lower it.")
@@ -741,4 +770,5 @@ def ask_setup(
         model=model,
         effort=effort,
         ignore_rules="yes" if ignore_rules else "",
+        meeting_md="" if use_meeting_md else "no",
     )
