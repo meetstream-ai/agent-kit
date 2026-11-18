@@ -29,6 +29,8 @@ class BridgeConfig:
     prime: bool = True
     """Run one tiny turn at meeting start so the agent's prompt cache is warm."""
     quiet: bool = False
+    debug: bool = False
+    """Log every message type the agent sends (``--debug`` or ``MS_AGENT_KIT_DEBUG=1``); never their text."""
     confirm: Callable[[str], bool] = ask_confirm
     """Asks the owner to allow one action (``confirm`` access)."""
     runtime_dir: Path | None = None

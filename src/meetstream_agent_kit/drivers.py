@@ -391,6 +391,7 @@ class AcpDriver(_JsonRpcDriver):
         session = self.session
         for message in self.messages(proc):
             method, msg_id = message.get("method"), message.get("id")
+            session.debug("acp <- " + acp_summary(message))
             if method is None and msg_id is not None:  # a response to us
                 if msg_id == self._prompt_id:
                     self._prompt_id = None
@@ -415,18 +416,30 @@ class AcpDriver(_JsonRpcDriver):
         self._finish(proc)
 
     def _answer(self, message: dict[str, Any]) -> None:
-        if message.get("method") != "session/request_permission":
-            self.reply_unsupported(message)
-            return
-        params = message.get("params") or {}
-        allowed = self.permission_decision(params.get("toolCall") or {})
-        wanted = ("allow_once", "allow_always") if allowed else ("reject_once", "reject_always")
-        options = params.get("options") or []
-        choice = next((o for kind in wanted for o in options if o.get("kind") == kind), None)
-        outcome = (
-            {"outcome": "selected", "optionId": choice["optionId"]} if choice else {"outcome": "cancelled"}
-        )
-        self.send({"id": message["id"], "result": {"outcome": outcome}})
+        """Every request from the agent gets an answer: an unanswered one stalls the turn for good."""
+        try:
+            if message.get("method") != "session/request_permission":
+                self.session.debug(f"acp -> error: {message.get('method')} is not supported")
+                self.reply_unsupported(message)
+                return
+            params = _as_dict(message.get("params"))
+            allowed = self.permission_decision(_as_dict(params.get("toolCall")))
+            options = [o for o in params.get("options") or [] if isinstance(o, dict)]
+            choice = _permission_option(options, allowed)
+            outcome = (
+                {"outcome": "selected", "optionId": choice["optionId"]}
+                if choice
+                else {"outcome": "cancelled"}
+            )
+            self.session.debug(
+                f"acp -> permission {'allowed' if allowed else 'denied'} "
+                f"({self.session.access}): {outcome.get('optionId') or 'cancelled'}"
+            )
+            self.send({"id": message["id"], "result": {"outcome": outcome}})
+        except Exception as exc:  # a malformed request must still be answered
+            self.session.log(f"could not answer the agent's {message.get('method')}: {exc}")
+            with contextlib.suppress(Exception):
+                self.send({"id": message["id"], "error": {"code": -32603, "message": "the bridge failed"}})
 
     def permission_decision(self, tool_call: dict[str, Any]) -> bool:
         """Reads and meeting tools are fine; edits, deletes, moves and shell follow the access level."""
@@ -450,6 +463,7 @@ class AcpDriver(_JsonRpcDriver):
         if session.started_turns == 0:  # ACP has no system-prompt field: the rules lead the first turn
             text = session.rules() + "\n\n" + text
         self._prompt_id = self.next_id()
+        session.debug(f"acp -> session/prompt id={self._prompt_id}")
         self.send(
             {
                 "id": self._prompt_id,
@@ -460,8 +474,52 @@ class AcpDriver(_JsonRpcDriver):
 
     def cancel(self) -> None:
         if self.acp_session_id and self._prompt_id is not None:
+            self.session.debug("acp -> session/cancel")
             with contextlib.suppress(BrokenPipeError, ValueError, OSError):  # gone: the turn ends anyway
                 self.send({"method": "session/cancel", "params": {"sessionId": self.acp_session_id}})
+
+
+def _permission_option(options: list[dict[str, Any]], allowed: bool) -> dict[str, Any] | None:
+    """The option that says yes (or no): by ACP kind, then by a kind or name that starts that way."""
+    exact = ("allow_once", "allow_always") if allowed else ("reject_once", "reject_always")
+    prefixes = ("allow", "approve", "yes", "accept") if allowed else ("reject", "deny", "no", "decline")
+    usable = [o for o in options if o.get("optionId")]
+    for field, test in (("kind", exact), ("kind", prefixes), ("name", prefixes)):
+        for option in usable:
+            value = str(option.get(field) or "").lower()
+            if (value in test) if test is exact else value.startswith(test):
+                return option
+    return None
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def acp_summary(message: dict[str, Any]) -> str:
+    """One line about an ACP message, for ``--debug``: its kind, never the text people or the agent wrote."""
+    method, msg_id = message.get("method"), message.get("id")
+    params = _as_dict(message.get("params"))
+    if method == "session/update":
+        update = _as_dict(params.get("update"))
+        kind = str(update.get("sessionUpdate") or "?")
+        if kind.startswith("tool_call"):
+            return (
+                f"update {kind} {str(update.get('title') or '')[:80]} {update.get('status') or ''}".rstrip()
+            )
+        return f"update {kind}"
+    if method is not None and msg_id is not None:
+        call = _as_dict(params.get("toolCall"))
+        what = f" {call.get('kind') or ''} {str(call.get('title') or '')[:80]}".rstrip() if call else ""
+        return f"request {method} id={msg_id}{what}"
+    if method is not None:
+        return f"notification {method}"
+    if "error" in message:
+        error = _as_dict(message.get("error"))
+        return f"response id={msg_id} error {str(error.get('message') or '')[:120]}"
+    result = _as_dict(message.get("result"))
+    stop = f" stopReason={result['stopReason']}" if "stopReason" in result else ""
+    return f"response id={msg_id}{stop}"
 
 
 # ── Codex app-server ──────────────────────────────────────────────────────────

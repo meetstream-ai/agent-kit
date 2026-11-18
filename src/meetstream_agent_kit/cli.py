@@ -109,6 +109,7 @@ def _build_config(args: argparse.Namespace, *, max_access: str = "readonly") -> 
         model=args.model or "",
         effort=args.effort or "",
         prime=not getattr(args, "no_prime", False),
+        debug=bool(getattr(args, "debug", False)) or os.environ.get("MS_AGENT_KIT_DEBUG") == "1",
     )
 
 
@@ -559,7 +560,12 @@ def _agent_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--owner", default=os.environ.get("USER", "the user"), help="your name, as MIA hears it"
     )
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TURN_TIMEOUT_S, help="seconds per turn")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TURN_TIMEOUT_S,
+        help=f"stop a turn after this many seconds with no output (default: {DEFAULT_TURN_TIMEOUT_S:.0f})",
+    )
     parser.add_argument(
         "--model", help="model flag for the CLI (e.g. haiku); MIA's agent config can override"
     )
@@ -607,6 +613,11 @@ def build_parser() -> argparse.ArgumentParser:
         "shell or file action) or full (no prompts). MIA's agent config can only lower it",
     )
     serve.add_argument("--no-prime", action="store_true", help="skip the warm-up turn at meeting start")
+    serve.add_argument(
+        "--debug",
+        action="store_true",
+        help="log every message type the agent sends (ACP), never their text; also MS_AGENT_KIT_DEBUG=1",
+    )
     serve.add_argument(
         "--tunnel",
         choices=list(TUNNEL_KINDS),

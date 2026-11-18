@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from meetstream_agent_kit.cli import main
+from meetstream_agent_kit.constants import CANCEL_GRACE_S, TIMEOUT_REPLY
 from meetstream_agent_kit.pairing import PairingStore
 from meetstream_agent_kit.session import MeetingSession
 
@@ -129,8 +130,13 @@ def test_a_turn_that_runs_too_long_is_stopped(tmp_path: Path, monkeypatch: pytes
     session.start()
     t0 = time.monotonic()
     events = run(session, "slow")
-    assert events[-1]["code"] == "timeout"
-    assert time.monotonic() - t0 < 3
+    elapsed = time.monotonic() - t0
+    # MIA is never left silent: the turn ends with a short sentence to speak.
+    assert events[-1] == {**events[-1], "type": "done", "timed_out": True, "text": TIMEOUT_REPLY}
+    assert events[-2] == {"type": "delta", "text": TIMEOUT_REPLY}
+    assert elapsed < 1 + CANCEL_GRACE_S + 2
+    monkeypatch.setenv("STUB_FIRST_S", "0")
+    assert run(session, "and now?")[-1]["type"] == "done"  # the next turn still works
     session.close()
 
 
