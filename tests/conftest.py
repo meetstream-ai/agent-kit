@@ -36,6 +36,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """An empty bridge home per test; no desktop notifications."""
     path = tmp_path / "home"
     monkeypatch.setenv("MEETSTREAM_AGENT_KIT_HOME", str(path))
+    monkeypatch.setenv("MEETSTREAM_AGENT_KIT_WORKSPACE", str(tmp_path / "MeetStream Agent"))
     monkeypatch.setenv("MIA_BRIDGE_HOME", str(tmp_path / "legacy"))
     monkeypatch.setattr("meetstream_agent_kit.console.shutil.which", lambda name: None)
     for name in (

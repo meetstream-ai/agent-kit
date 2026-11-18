@@ -15,6 +15,7 @@ import errno
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -24,7 +25,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final
 
-from meetstream_agent_kit import __version__, checks, estimates, ui, warm_check
+from meetstream_agent_kit import __version__, checks, context, estimates, ui, warm_check
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
 from meetstream_agent_kit.compare import Measured, chart_lines, compare
@@ -114,6 +115,7 @@ def _build_config(args: argparse.Namespace, *, max_access: str = "readonly") -> 
         effort=args.effort or "",
         prime=not getattr(args, "no_prime", False),
         ignore_rules=bool(getattr(args, "ignore_rules", False)),
+        meeting_notes="" if getattr(args, "no_meeting_md", False) else context.meeting_notes(),
         debug=bool(getattr(args, "debug", False)) or os.environ.get("MS_AGENT_KIT_DEBUG") == "1",
     )
 
@@ -205,6 +207,15 @@ def _print_running(
             ("access", config.max_access),
             ("model", config.model or "the CLI's default"),
             ("effort", config.effort or "the CLI's default"),
+            (
+                "context",
+                context.summary(
+                    agent,
+                    config.workdir,
+                    ignore_rules=config.ignore_rules,
+                    use_meeting_md=bool(config.meeting_notes),
+                ),
+            ),
             ("address", f"http://127.0.0.1:{port}"),
             ("login", login),
         ],
@@ -415,6 +426,7 @@ def _setup_namespace(answers: SetupAnswers) -> argparse.Namespace:
         effort=answers.effort or None,
         no_prime=False,
         ignore_rules=answers.ignore_rules == "yes",
+        no_meeting_md=answers.meeting_md == "no",
     )
 
 
@@ -476,6 +488,51 @@ def _doctor_config(args: argparse.Namespace, agent: AgentSpec, binary: str) -> B
     )
 
 
+CONTEXT_WARN_TOKENS: Final = 4000
+
+
+def _context_check(agent: AgentSpec, workdir: Path, args: argparse.Namespace) -> checks.Check:
+    """What the agent reads on every meeting turn; a heavy context is a slower, costlier meeting."""
+    ignore = bool(getattr(args, "ignore_rules", False))
+    items = context.effective_context(agent, workdir, ignore_rules=ignore)
+    tokens = context.tokens_per_turn(items)
+    label = context.summary(agent, workdir, ignore_rules=ignore)
+    heavy = tokens > CONTEXT_WARN_TOKENS
+    fix = f"Use {context.meeting_workspace()} as the folder, or --ignore-rules. See: {PROG} context show"
+    return checks.Check("context", not heavy, f"{label} ({len(items)} file(s))", fix if heavy else "")
+
+
+def _context_args(args: argparse.Namespace) -> tuple[AgentSpec, Path, bool, bool]:
+    """Agent, folder and context choices: from the command line, else the saved setup."""
+    saved = load_answers(default_home())
+    name = args.agent or (saved.agent if saved else "claude")
+    agent = AGENTS.get(name) or custom_agent(saved.command if saved and saved.command else name)
+    workdir = Path(args.workdir or (saved.workdir if saved else Path.cwd())).expanduser().resolve()
+    ignore = args.ignore_rules or bool(saved and saved.ignore_rules == "yes")
+    use_md = not (saved and saved.meeting_md == "no")
+    return agent, workdir, ignore, use_md
+
+
+def cmd_context(args: argparse.Namespace) -> int:
+    """``context show``: what the agent reads in meetings. ``context edit``: your MEETING.md."""
+    if args.action == "edit":
+        path = context.ensure_meeting_file()
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+        if not ui.is_interactive():
+            say(str(path))
+            return EXIT_OK
+        say(f"Opening {path} with {editor}. Keep it short: it is read on every meeting turn.")
+        return EXIT_OK if subprocess.call([*shlex.split(editor), str(path)]) == 0 else EXIT_FAILED
+    agent, workdir, ignore, use_md = _context_args(args)
+    items = context.effective_context(agent, workdir, ignore_rules=ignore, use_meeting_md=use_md)
+    label = context.summary(agent, workdir, ignore_rules=ignore, use_meeting_md=use_md)
+    say(f"{agent.label} in {ui.short_path(str(workdir))}: {label}")
+    for row in context.table(items):
+        say(f"  {row}")
+    say(f"Edit your meeting instructions with: {PROG} context edit  ({context.meeting_file()})")
+    return EXIT_OK
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     home = default_home()
     results = [checks.check_python(), checks.check_home(home)]
@@ -505,6 +562,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         )
     except PairingError as exc:
         results.append(checks.Check("pairing", False, str(exc)))
+    if agent is not None:
+        results.append(_context_check(agent, Path(args.workdir).expanduser().resolve(), args))
     results.append(checks.check_port(home, args.port))
     say(f"MeetStream Agent Kit {__version__} doctor")
     for check in results:
@@ -677,6 +736,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--no-prime", action="store_true", help="skip the warm-up turn at meeting start")
     serve.add_argument(
+        "--no-meeting-md",
+        action="store_true",
+        help="leave your MEETING.md out of meetings (see: meetstream-agent-kit context show)",
+    )
+    serve.add_argument(
         "--ignore-rules",
         action="store_true",
         help="skip the work folder's project rules (CLAUDE.md, AGENTS.md...) where the agent CLI can",
@@ -723,6 +787,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--turns-per-hour", type=int, default=20, help="with --compare: answered turns per hour (default 20)"
     )
     bench.set_defaults(func=cmd_bench)
+
+    ctx = sub.add_parser("context", help="what your agent reads in meetings; edit your MEETING.md")
+    ctx.add_argument("action", choices=["show", "edit"], nargs="?", default="show")
+    ctx.add_argument("--agent", help="agent (default: your saved setup)")
+    ctx.add_argument("--workdir", help="folder (default: your saved setup)")
+    ctx.add_argument("--ignore-rules", action="store_true", help="as with serve --ignore-rules")
+    ctx.set_defaults(func=cmd_context)
 
     shim = sub.add_parser("mcp-stdio", help=argparse.SUPPRESS)
     shim.add_argument("--url", required=True)

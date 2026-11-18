@@ -125,9 +125,9 @@ def test_project_rules_are_found_with_their_token_cost(
     (tmp_path / "CLAUDE.md").write_text("x" * 29_500, encoding="utf-8")
     (tmp_path / "AGENTS.md").write_text("y" * 400, encoding="utf-8")
     assert project_rules(tmp_path) == [("AGENTS.md", 400), ("CLAUDE.md", 29_500)]
-    workdir, ignore = _review_project_rules(_replies("1"), AGENTS["claude"], tmp_path, tmp_path / "ws")
+    choice = _review_project_rules(_replies("1"), AGENTS["claude"], tmp_path, tmp_path / "ws")
     out = capsys.readouterr().out
-    assert (workdir, ignore) == (str(tmp_path), True)
+    assert choice == (str(tmp_path), True, True)  # meeting only: rules ignored, MEETING.md kept
     assert "CLAUDE.md  28.8 KB ≈ 7,375 tokens" in out
     assert "≈ 7,475 tokens" in out
 
@@ -136,12 +136,12 @@ def test_rules_can_be_avoided_with_the_meeting_workspace(tmp_path: Path) -> None
     (tmp_path / "AGENTS.md").write_text("rules", encoding="utf-8")
     workspace = tmp_path / "MeetStream Agent"
     # agy has no switch, so the menu is: 1 = workspace, 2 = keep
-    workdir, ignore = _review_project_rules(_replies("1"), AGENTS["agy"], tmp_path, workspace)
+    workdir, ignore, _ = _review_project_rules(_replies("1"), AGENTS["agy"], tmp_path, workspace)
     assert workdir == str(workspace.resolve())
     assert workspace.is_dir()
     assert ignore is False
     kept = _review_project_rules(_replies("2"), custom_agent("tool"), tmp_path, workspace)
-    assert kept == (str(tmp_path), False)
+    assert kept == (str(tmp_path), False, True)
 
 
 def test_setup_defaults_to_the_meeting_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
