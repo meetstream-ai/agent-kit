@@ -315,6 +315,11 @@ def _menu_in_a_terminal(keys: list[bytes], gap_s: float = 0.15) -> str:
     pid, fd = pty.fork()
     if pid == 0:  # pragma: no cover - the child
         os.execv(sys.executable, [sys.executable, "-c", code])  # noqa: S606 - our own interpreter
+    import fcntl
+    import struct
+    import termios
+
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
     out = b""
 
     def read_for(seconds: float) -> None:
