@@ -21,7 +21,15 @@ All notable changes to this package. The format follows
   agent lists it, and the effort with `session/set_config_option` when the
   agent offers that thinking level. Before, `agy acp` ran its own current model
   (gemini-3.8-flash-high), not the one in its settings.
-- **Compare models** (optional in setup, and `bench --compare`): one short real
+- The model picker shows, per model, an estimated tokens-per-hour bar, feature
+  chips (talk, meeting tools, vision, local actions) and the measured time to
+  first words, and a detail line for the highlighted model that follows the
+  arrow. Estimates come from real measurements kept in `model-usage.json` in the
+  kit's folder (setup's test turn and every comparison add to it), never
+  invented: an unmeasured model says "not measured". Vision comes from the CLI
+  where it says (Codex `inputModalities`, ACP `promptCapabilities`), otherwise
+  from a small table marked "from docs".
+- **Measure live** in the picker (and `bench --compare`): one short real
   meeting turn per model, the token usage the CLI itself reports, projected to
   an hour of meeting and drawn as bars, with that turn's time and, where the
   CLI reports a price (Claude Code, Hermes), the cost per hour. The assumption
@@ -29,6 +37,12 @@ All notable changes to this package. The format follows
   adding the meeting text and the answer to the context; `--turns-per-hour`
   changes it). Without a price it says "plan usage, no per-token bill".
 - Hermes `provider:model` ids go to `--provider` and `-m`.
+- Setup's test turns show live stages with real timings instead of a silent
+  wait: "Woke Codex 0.3 s · First words 5.5 s · Answered 6.5 s", with rotating
+  verbs (Pondering, Noodling, ...). The warm ACP check shows "Session ready ·
+  Tool called · Answered", and `bench --compare` shows the same stages per
+  model. Without a terminal it prints one plain line. `bench` cold rows add
+  `first_line_ms`.
 
 ## [0.3.2] - Unreleased
 

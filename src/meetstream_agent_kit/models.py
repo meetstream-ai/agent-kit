@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
-from meetstream_agent_kit.agents import AgentSpec
+from meetstream_agent_kit.agents import AGENTS, AgentSpec
 
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
@@ -40,6 +40,8 @@ class ModelChoice:
     label: str = ""
     efforts: tuple[str, ...] = ()
     """Effort levels this model takes, when the CLI lists them per model."""
+    vision: bool | None = None
+    vision_source: str = ""
 
 
 @dataclass
@@ -51,10 +53,48 @@ class ModelCatalog:
     source: str = ""
     """Where the list came from, shown next to it (``agy acp``, ``codex app-server``, ``claude --help``)."""
     error: str = ""
+    vision: bool | None = None
+    vision_source: str = ""
 
     def efforts_for(self, model: str) -> list[str]:
         chosen = next((m for m in self.models if m.id == model), None)
         return list(chosen.efforts) if chosen and chosen.efforts else list(self.efforts)
+
+
+@dataclass(frozen=True)
+class Feature:
+    name: str
+    available: bool | None
+    source: str = ""
+
+
+def _documented_vision(agent: AgentSpec, model: str) -> bool | None:
+    """Curated fallback from docs; CLI capabilities take precedence."""
+    if "gpt-oss" in model.lower():
+        return False
+    if agent.name == "claude" or "claude" in model.lower():
+        return True
+    return None
+
+
+def features(agent: AgentSpec, model: ModelChoice) -> list[Feature]:
+    """Meeting capabilities, with the source of the vision claim."""
+    # Per-model facts first: a model-specific listing (Codex inputModalities), then the documented
+    # per-model rules (e.g. gpt-oss is text-only), and only then an agent-wide ACP capability.
+    vision, source = model.vision, model.vision_source
+    documented = _documented_vision(agent, model.id)
+    agent_wide = source.endswith(" acp")  # ACP promptCapabilities describe the agent, not this model
+    if documented is not None and (vision is None or agent_wide):
+        vision, source = documented, "from docs"
+    tools = agent.warm in ("claude_stream_json", "codex_app_server") or (
+        agent.warm == "acp" and agent.acp_mcp
+    )
+    return [
+        Feature("talk", True),
+        Feature("tools", tools),
+        Feature("vision", vision, source),
+        Feature("local", True if agent.name in AGENTS else None, "per access level"),
+    ]
 
 
 # ── The CLI's own defaults ────────────────────────────────────────────────────
@@ -176,23 +216,29 @@ def _acp_catalog(agent: AgentSpec, binary: str, timeout_s: float) -> ModelCatalo
         "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}, "terminal": False},
         "clientInfo": {"name": "meetstream-agent-kit", "version": "models"},
     }
-    _, created = _rpc_session(
+    initialized, created = _rpc_session(
         [binary, *agent.acp_args],
         [("initialize", init), ("session/new", {"cwd": tempfile.gettempdir(), "mcpServers": []})],
         timeout_s,
     )
-    return acp_catalog_from(created or {}, f"{agent.binary} {' '.join(agent.acp_args)}")
+    return acp_catalog_from(created or {}, f"{agent.binary} {' '.join(agent.acp_args)}", initialized)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def acp_catalog_from(created: dict[str, Any], source: str) -> ModelCatalog:
+def acp_catalog_from(
+    created: dict[str, Any], source: str, initialized: dict[str, Any] | None = None
+) -> ModelCatalog:
     """The models and thinking levels an ACP ``session/new`` result advertises."""
     raw = _as_dict(created.get("models"))
+    capabilities = _as_dict(_as_dict(initialized).get("agentCapabilities"))
+    image = _as_dict(capabilities.get("promptCapabilities")).get("image")
+    vision = image if isinstance(image, bool) else None
+    vision_source = source if vision is not None else ""
     models = [
-        ModelChoice(str(m["modelId"]), str(m.get("name") or ""))
+        ModelChoice(str(m["modelId"]), str(m.get("name") or ""), vision=vision, vision_source=vision_source)
         for m in raw.get("availableModels") or []
         if isinstance(m, dict) and m.get("modelId")
     ]
@@ -204,7 +250,15 @@ def acp_catalog_from(created: dict[str, Any], source: str) -> ModelCatalog:
                 str(o["value"]) for o in option.get("options") or [] if isinstance(o, dict) and o.get("value")
             ]
             current_effort = str(option.get("currentValue") or "")
-    return ModelCatalog(models, str(raw.get("currentModelId") or ""), efforts, current_effort, source)
+    return ModelCatalog(
+        models,
+        str(raw.get("currentModelId") or ""),
+        efforts,
+        current_effort,
+        source,
+        vision=vision,
+        vision_source=vision_source,
+    )
 
 
 def _codex_catalog(binary: str, timeout_s: float) -> ModelCatalog:
@@ -232,7 +286,17 @@ def codex_catalog_from(listed: dict[str, Any]) -> ModelCatalog:
             for e in item.get("supportedReasoningEfforts") or []
             if isinstance(e, dict) and e.get("reasoningEffort")
         )
-        models.append(ModelChoice(str(item["id"]), str(item.get("displayName") or ""), efforts))
+        modalities = item.get("inputModalities")
+        vision = "image" in modalities if isinstance(modalities, list) else None
+        models.append(
+            ModelChoice(
+                str(item["id"]),
+                str(item.get("displayName") or ""),
+                efforts,
+                vision,
+                "codex app-server" if vision is not None else "",
+            )
+        )
         if item.get("isDefault"):
             default, default_effort = str(item["id"]), str(item.get("defaultReasoningEffort") or "")
     efforts_all = list(dict.fromkeys(e for m in models for e in m.efforts))
@@ -303,7 +367,12 @@ def catalog_for(
     if model:
         catalog.default_model = model
         if not any(m.id == model for m in catalog.models):
-            catalog.models.insert(0, ModelChoice(model, "your CLI's default"))
+            catalog.models.insert(
+                0,
+                ModelChoice(
+                    model, "your CLI's default", vision=catalog.vision, vision_source=catalog.vision_source
+                ),
+            )
     if effort and (not catalog.efforts or effort in catalog.efforts):
         catalog.default_effort = effort
     return catalog

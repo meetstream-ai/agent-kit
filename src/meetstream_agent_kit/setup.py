@@ -22,14 +22,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from meetstream_agent_kit import checks, ui
+from meetstream_agent_kit import checks, estimates, ui
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
 from meetstream_agent_kit.compare import Measured, chart_lines, compare, measure
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.login import LoginChecker
-from meetstream_agent_kit.models import ModelCatalog, ModelChoice, catalog_for
+from meetstream_agent_kit.models import ModelCatalog, ModelChoice, catalog_for, features
 from meetstream_agent_kit.tunnel import (
     NGROK_AUTHTOKEN_URL,
     NGROK_DOMAINS_URL,
@@ -41,6 +41,7 @@ from meetstream_agent_kit.tunnel import (
     program_for,
     read_ngrok_setup,
 )
+from meetstream_agent_kit.usage import project_hour
 
 SETUP_STEPS: Final = 7
 """Agent, model, folder, access, tunnel, name, then the test turn (run by the CLI)."""
@@ -216,13 +217,23 @@ class Prompter:
                 return list(chosen)
 
     def choose(
-        self, question: str, options: Sequence[str], default: int = 0, hints: Sequence[str] = ()
+        self,
+        question: str,
+        options: Sequence[str],
+        default: int = 0,
+        hints: Sequence[str] = (),
+        detail: Callable[[int], str] | None = None,
     ) -> int:
         if self.interactive:
+            if detail is not None:
+                return ui.arrow_select(question.strip(), options, default, hints, detail=detail)
             return ui.arrow_select(question.strip(), options, default, hints)
         say(question)
         pad = max(len(option) for option in options) + 2
         for index, option in enumerate(options, 1):
+            if detail is not None:
+                say(ui.clip(f"  {index}) {ui.plain(option)}", ui.width() - 1))
+                continue
             hint = hints[index - 1] if index - 1 < len(hints) else ""
             say(f"  {index}) {option.ljust(pad)}{hint}".rstrip())
         while True:
@@ -404,51 +415,60 @@ def _pick_model(
     last_effort = last.effort if last and last.agent == agent.name else ""
     while True:
         shown = _menu_models(listed, last_model)
-        labels = [m.id for m in shown] + ["Type another model id", "The CLI's default"]
-        hints = [
-            " · ".join(
-                part
-                for part in (m.label, "your CLI's default" if m.id == listed.default_model else "")
-                if part and part != m.id
-            )
-            for m in shown
-        ] + [f"{len(listed.models) - len(shown)} more" if len(listed.models) > len(shown) else "", ""]
+        fallback = next((m for m in listed.models if m.id == listed.default_model), None)
+        default_choice = fallback or ModelChoice(
+            listed.default_model, vision=listed.vision, vision_source=listed.vision_source
+        )
+        vision = next(f for f in features(agent, default_choice) if f.name == "vision")
+        cli_default = ModelChoice(
+            "",
+            vision=vision.available,
+            vision_source=vision.source,
+        )
+        measurable = [*shown, cli_default]
+        cached = estimates.load(agent.name)
+        largest = max(
+            (project_hour(cached[m.id].usage).total for m in measurable if m.id in cached), default=0
+        )
+        labels = [estimates.row_text(agent, m, cached.get(m.id), largest) for m in shown]
+        labels += [
+            "Type another model id",
+            estimates.row_text(agent, cli_default, cached.get(""), largest),
+            "Measure live (one short real turn per model)",
+        ]
+        details = [estimates.detail_text(agent, m, cached.get(m.id)) for m in shown]
+        details += [
+            "Enter a model id from your CLI.",
+            estimates.detail_text(agent, cli_default, cached.get("")),
+            "Choose models to measure. Each runs one short real turn and uses your plan or API credits.",
+        ]
         wanted = last_model or listed.default_model
-        default = next((i for i, m in enumerate(shown) if m.id == wanted), len(labels) - 1)
-        index = prompt.choose("Which model?", labels, default, hints)
+        default = next((i for i, m in enumerate(shown) if m.id == wanted), len(shown) + 1)
+        index = prompt.choose("Which model?", labels, default, detail=details.__getitem__)
+        if index == len(shown) + 2:
+            ticked = sorted(range(len(measurable)), key=lambda i: measurable[i].id in cached)[:COMPARE_MAX]
+            picked = prompt.choose_many(
+                "Models to measure (one short real turn each)",
+                [m.id or "The CLI's default" for m in measurable],
+                ticked,
+                [m.label for m in measurable],
+            )
+            results = compare(
+                compare_config(),
+                [measurable[i].id for i in picked],
+                last_effort,
+                run=lambda c, m, e: measure_model(c, m, e if e in listed.efforts_for(m) else ""),
+            )
+            say("")
+            for line in chart_lines(results):
+                say(line)
+            say("")
+            continue
         if index == len(shown):
             model = prompt.ask("Model id (as the CLI names it)", last_model).strip()
         else:
             model = shown[index].id if index < len(shown) else ""
-        effort = _pick_effort(prompt, listed, model, last_effort)
-        if (
-            len(shown) > 1
-            and not prompt.eof
-            and prompt.confirm("Compare models by token use for an hour of meeting?", default=False)
-        ):
-            ticked = [i for i, m in enumerate(shown) if m.id == model][:1]
-            ticked += [i for i in range(len(shown)) if i not in ticked][: COMPARE_MAX - len(ticked)]
-            picked = prompt.choose_many(
-                f"Models to compare (one short real turn each, up to {COMPARE_MAX})",
-                [m.id for m in shown],
-                ticked,
-                [m.label for m in shown],
-            )[:COMPARE_MAX]
-            config = compare_config()
-            results = compare(
-                config,
-                [shown[i].id for i in picked],
-                effort,
-                run=lambda c, m, e: measure_model(c, m, e if e in listed.efforts_for(m) else ""),
-            )
-            say("")
-            for line in chart_lines(results, selected=model):
-                say(line)
-            say("")
-            if not prompt.confirm(f"Keep {model or 'the default model'}?", default=True):
-                last_model, last_effort = model, effort
-                continue
-        return model, effort
+        return model, _pick_effort(prompt, listed, model, last_effort)
 
 
 # ── Step 4: how MeetStream reaches this computer ──────────────────────────────

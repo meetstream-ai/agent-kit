@@ -12,13 +12,14 @@ import contextlib
 import itertools
 import os
 import random
+import re
 import select
 import shutil
 import sys
 import threading
 import time
 import unicodedata
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import Final
@@ -337,7 +338,50 @@ def _clip(text: str, room: int) -> str:
     return text if len(text) <= room else text[: max(1, room - 1)] + "…"
 
 
-def arrow_select(question: str, options: Sequence[str], default: int = 0, hints: Sequence[str] = ()) -> int:
+_SGR: Final = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(text: str) -> str:
+    """Remove our colour escapes."""
+    return _SGR.sub("", text)
+
+
+def clip(text: str, room: int) -> str:
+    """Fit coloured text on one line, counting wide characters as two cells."""
+    parts = re.split(r"(\x1b\[[0-9;]*m)", text)
+    tokens: list[tuple[str, int]] = []
+    for part in parts:
+        if _SGR.fullmatch(part):
+            tokens.append((part, 0))
+            continue
+        for char in part:
+            if unicodedata.category(char).startswith("C"):
+                continue
+            size = (
+                0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in "WF" else 1
+            )
+            tokens.append((char, size))
+    if room <= 0:
+        return ""
+    if sum(size for _, size in tokens) <= room:
+        return "".join(char for char, _ in tokens)
+    result = ""
+    cells = 0
+    for char, size in tokens:
+        if cells + size > room - 1:
+            break
+        result += char
+        cells += size
+    return result + "…" + ("\x1b[0m" if _SGR.search(result) else "")
+
+
+def arrow_select(
+    question: str,
+    options: Sequence[str],
+    default: int = 0,
+    hints: Sequence[str] = (),
+    detail: Callable[[int], str] | None = None,
+) -> int:
     """Pick one option with ↑/↓ (or j/k, or its number) and Enter. Needs a terminal."""
     import termios  # Unix only; callers check is_interactive() first
     import tty
@@ -346,20 +390,28 @@ def arrow_select(question: str, options: Sequence[str], default: int = 0, hints:
     current = default
     room = width() - 6
     hint_list = list(hints) + [""] * (len(options) - len(hints))
+    lines = len(options) + (detail is not None)
 
     def render(first: bool) -> None:
         if not first:
-            sys.stdout.write(f"\x1b[{len(options)}F")
+            sys.stdout.write(f"\x1b[{lines}F")
         pad = max(len(option) for option in options)
         for index, option in enumerate(options):
             hint = hint_list[index]
             label = _clip(option.ljust(pad) if hint else option, room)
             extra = f"  {paint(hint, 'dim')}" if hint and len(label) + len(hint) + 2 <= room else ""
+            if detail is not None:
+                label = clip(option, room)
+                extra = (
+                    f"  {paint(hint, 'dim')}" if hint and len(plain(label)) + len(hint) + 2 <= room else ""
+                )
             if index == current:
                 line = f"  {paint(_POINTER, 'cyan', 'bold')} {paint(label, 'cyan', 'bold')}{extra}"
             else:
                 line = f"    {label}{extra}"
-            sys.stdout.write("\x1b[2K" + line + "\n")
+            sys.stdout.write("\x1b[2K" + (clip(line, width() - 1) if detail is not None else line) + "\n")
+        if detail is not None:
+            sys.stdout.write("\x1b[2K  " + paint(clip(detail(current), width() - 3), "dim") + "\n")
         sys.stdout.flush()
 
     keys = "↑/↓ to move, Enter to pick"
@@ -391,9 +443,11 @@ def arrow_select(question: str, options: Sequence[str], default: int = 0, hints:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[?25h")
         # Fold the menu into one answered line.
-        sys.stdout.write(f"\x1b[{len(options) + 1}F\x1b[J")
+        sys.stdout.write(f"\x1b[{lines + 1}F\x1b[J")
         sys.stdout.flush()
-    answered(question, options[current])
+    # With a detail line the options are table rows: the answer is their first column.
+    answer = plain(options[current]).split("  ")[0].strip() if detail is not None else options[current]
+    answered(question, answer)
     return current
 
 

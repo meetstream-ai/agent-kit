@@ -356,7 +356,7 @@ def test_plain_output_has_no_escape_codes(
 # ── Arrow-key menu on a real terminal ────────────────────────────────────────
 
 
-def _menu_in_a_terminal(keys: list[bytes], gap_s: float = 0.15) -> str:
+def _menu_in_a_terminal(keys: list[bytes], gap_s: float = 0.15, *, detail: bool = False) -> str:
     """Run Prompter.choose in a pseudo-terminal, press ``keys``, return what the child printed."""
     import os
     import pty
@@ -367,7 +367,8 @@ def _menu_in_a_terminal(keys: list[bytes], gap_s: float = 0.15) -> str:
         "from meetstream_agent_kit.setup import Prompter\n"
         "p = Prompter()\n"
         "assert p.interactive\n"
-        "i = p.choose('Pick one', ['alpha', 'beta', 'gamma'], 0, ['first', '', 'third'])\n"
+        f"detail = (lambda i: f'details: {{i}}') if {detail!r} else None\n"
+        "i = p.choose('Pick one', ['alpha', 'beta', 'gamma'], 0, ['first', '', 'third'], detail=detail)\n"
         "print('PICKED', i, flush=True)\n"
     )
     pid, fd = pty.fork()
