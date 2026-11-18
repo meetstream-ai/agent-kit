@@ -108,8 +108,9 @@ class MeetingSession:
     def turn_running(self) -> bool:
         return self._turn_lock.locked()
 
-    def rules(self) -> str:
-        return system_prompt(self.config.owner, self.instructions)
+    def rules(self, access: AccessLevel | None = None) -> str:
+        """The agent's instructions, for the access level the agent really runs at."""
+        return system_prompt(self.config.owner, self.instructions, access or self.access)
 
     def changed_fields(self, other: MeetingSession) -> list[str]:
         """Which parts of the meeting's setup differ from ``other`` (for the restart log line)."""
@@ -310,7 +311,7 @@ class MeetingSession:
         agent = cfg.agent
         access: AccessLevel = "full" if self.access == "full" else "readonly"
         argv, stdin_text = build_oneshot_argv(
-            agent, self.rules() + "\n\n" + text, access, cfg.binary, self.model, cfg.effort
+            agent, self.rules(access) + "\n\n" + text, access, cfg.binary, self.model, cfg.effort
         )
         deltas: queue.Queue[Any] = queue.Queue()
         box: dict[str, RunResult] = {}
