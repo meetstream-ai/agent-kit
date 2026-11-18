@@ -189,3 +189,58 @@ def test_acp_summary_lines() -> None:
         acp_summary({"id": 5, "method": "fs/read_text_file", "params": None})
         == "request fs/read_text_file id=5"
     )
+
+
+# ── A client that hangs up is not an error ───────────────────────────────────
+
+
+def _raise_then_handle(bridge: Bridge, error: BaseException) -> None:
+    try:
+        raise error
+    except BaseException:
+        bridge.server.handle_error(None, ("127.0.0.1", 50000))
+
+
+def test_a_dropped_connection_prints_no_traceback(
+    start_bridge: Callable[..., Bridge], capsys: pytest.CaptureFixture[str]
+) -> None:
+    bridge = start_bridge()
+    for error in (
+        ConnectionResetError(54, "Connection reset by peer"),
+        BrokenPipeError(32, "Broken pipe"),
+        TimeoutError("timed out"),
+    ):
+        _raise_then_handle(bridge, error)
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err + captured.out
+    bridge.server.config = dataclasses.replace(bridge.server.config, debug=True)
+    _raise_then_handle(bridge, ConnectionResetError(54, "Connection reset by peer"))
+    out = capsys.readouterr().out
+    assert out.strip() == "[debug] connection closed by the client (ConnectionResetError)"
+
+
+def test_real_errors_keep_their_traceback(
+    start_bridge: Callable[..., Bridge], capsys: pytest.CaptureFixture[str]
+) -> None:
+    bridge = start_bridge()
+    _raise_then_handle(bridge, ValueError("a real bug"))
+    err = capsys.readouterr().err
+    assert "Traceback" in err
+    assert "ValueError: a real bug" in err
+
+
+def test_a_client_that_hangs_up_mid_request_is_quiet(
+    start_bridge: Callable[..., Bridge], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """End to end: a reset socket (as when ngrok drops a connection) leaves no traceback."""
+    import socket
+    import struct
+
+    bridge = start_bridge()
+    with socket.create_connection(("127.0.0.1", bridge.server.port)) as conn:
+        conn.sendall(b"POST /v1/turn HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{")
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))  # RST on close
+    time.sleep(0.5)
+    assert bridge.post("/v1/session/start", {"session_id": "bot1"})[0] == 200  # still serving
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err + captured.out

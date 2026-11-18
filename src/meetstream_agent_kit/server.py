@@ -13,6 +13,7 @@ from __future__ import annotations
 import hmac
 import json
 import re
+import sys
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +44,10 @@ _PRIME_TURN: Final = (
 )
 
 Body = dict[str, Any]
+
+
+_HANGUPS: Final = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)
+"""Errors that only mean the other side went away."""
 
 
 class BridgeServer(ThreadingHTTPServer):
@@ -110,6 +115,18 @@ class BridgeServer(ThreadingHTTPServer):
             old.close()
         new.start()
         return new, False
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """A client that hangs up (MIA, ngrok, a closed tab) is normal: no traceback for that.
+
+        It shows as one line with ``--debug``. Anything else keeps the full traceback.
+        """
+        error = sys.exc_info()[1]
+        if isinstance(error, _HANGUPS):
+            if self.config.debug:
+                say(f"[debug] connection closed by the client ({type(error).__name__})")
+            return
+        super().handle_error(request, client_address)
 
     def end_session(self, session_id: str) -> bool:
         with self.sessions_lock:
