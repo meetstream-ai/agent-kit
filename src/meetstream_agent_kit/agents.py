@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 WarmDriver = Literal["claude_stream_json", "agy_stream_json", "acp", "codex_app_server"]
-"""Long-lived protocols: Claude Code and Antigravity stream-json, ACP, Codex app-server."""
+"""Long-lived protocols: Claude Code stream-json, ACP (Antigravity among others), Codex app-server.
+``agy_stream_json`` is kept for a custom spec; the built-in Antigravity uses ACP."""
 
 ParserName = Literal["claude_stream_json", "codex_jsonl", "agy_stream_json", "text"]
 """How one-shot output is read (see :mod:`meetstream_agent_kit.parsers`)."""
@@ -40,6 +41,8 @@ class AgentSpec:
     acp_args: tuple[str, ...] = ()
     acp_mcp: bool = True
     """False when the agent rejects per-session MCP servers (meeting tools are then not offered)."""
+    acp_set_model: bool = False
+    """The model is chosen per ACP session (``session/set_model``), not by a command-line flag."""
     effort_args: tuple[str, ...] = ()
     readonly_args: tuple[str, ...] = ()
     full_args: tuple[str, ...] = ()
@@ -128,7 +131,10 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             relogin="copilot login",
             install_hint="Install GitHub Copilot CLI: npm install -g @github/copilot",
         ),
-        # Headless agy soft-denies actions that need review (its default).
+        # Antigravity: `agy acp` for warm sessions, so the meeting tools reach it as a
+        # per-session MCP server (its stream-json mode has no MCP flag). Under ACP it
+        # asks Allow/Deny for commands and file changes, and the bridge answers by
+        # access level. Single runs (`-p`) soft-deny actions that need review.
         AgentSpec(
             name="agy",
             label="Antigravity CLI",
@@ -136,7 +142,9 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             oneshot_args=("-p", "{prompt}", "--output-format", "stream-json"),
             prompt_via="arg",
             parser="agy_stream_json",
-            warm="agy_stream_json",
+            warm="acp",
+            acp_args=("acp",),
+            acp_set_model=True,
             effort_args=("--effort", "{effort}"),
             full_args=("--mode=accept-edits",),
             model_flag="--model",

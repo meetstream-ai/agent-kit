@@ -118,9 +118,47 @@ def _rpc_loop(handle):
     reader()
 
 
+def call_stdio_mcp_tool(name):
+    """Like an ACP agent: start the stdio MCP server from session/new, then list and call a tool."""
+    import subprocess
+
+    server = next(iter(_acp.mcp), None)
+    if not server:
+        return "no MCP server configured"
+    env = dict(os.environ)
+    env.update({item["name"]: item["value"] for item in server.get("env") or []})
+    proc = subprocess.Popen(
+        [server["command"], *server.get("args", [])],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(method, params, msg_id):
+        proc.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}) + "\n"
+        )
+        proc.stdin.flush()
+        return json.loads(proc.stdout.readline())
+
+    try:
+        rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}}, 1)
+        listed = [t["name"] for t in rpc("tools/list", {}, 2)["result"]["tools"]]
+        if name not in listed:
+            return f"tool {name} not listed"
+        result = rpc("tools/call", {"name": name, "arguments": {"text": "hi"}}, 3)["result"]
+        return result["content"][0]["text"]
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=10)
+
+
 def _acp(msg, pending):
     """Minimal ACP agent: streams words; 'SLOW' waits for session/cancel;
-    'PERMISSION' asks for an execute permission and reports the outcome."""
+    'PERMISSION' asks for an execute permission and reports the outcome;
+    'TOOL:<name>' calls that meeting tool through the stdio MCP server from session/new;
+    'MODEL?' answers with the model set by session/set_model."""
     import queue
 
     method, mid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
@@ -129,11 +167,19 @@ def _acp(msg, pending):
     elif method == "session/new":
         _acp.mcp = params.get("mcpServers") or []
         emit({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "sess_1"}})
+    elif method == "session/set_model":
+        _acp.model = params.get("modelId")
+        emit({"jsonrpc": "2.0", "id": mid, "result": {}})
     elif method == "session/cancel":
         _acp.cancelled = True
     elif method == "session/prompt":
         text = "".join(p.get("text", "") for p in params.get("prompt") or [])
         answer = ANSWER
+        tool = re.search(r"TOOL:([A-Za-z0-9_]+)", text)
+        if tool:
+            answer = "Tool said: " + call_stdio_mcp_tool(tool.group(1))
+        if "MODEL?" in text:
+            answer = f"model {_acp.model}"
         if "PERMISSION" in text:
             ask_id = 9001
             box = queue.Queue()
@@ -181,6 +227,7 @@ def _acp(msg, pending):
 
 _acp.cancelled = False
 _acp.mcp = []
+_acp.model = None
 
 
 def _app_server(msg, pending):

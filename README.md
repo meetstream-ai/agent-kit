@@ -164,7 +164,7 @@ audit, and nothing else is installed.
 | GitHub Copilot CLI | `copilot` | yes (ACP) | yes | `copilot login` |
 | Muse Code | `muse` | yes (ACP) | yes | sign in when `muse` asks |
 | OpenClaw | `openclaw` | yes (ACP) | text only | `openclaw models auth login` |
-| Antigravity CLI | `agy` | yes | text only | `agy acp --login` |
+| Antigravity CLI | `agy` | yes (ACP) | yes | `agy acp --login` |
 | Any other CLI | `--command '...'` | one run per turn | text only | |
 
 A warm session keeps one agent process for the whole meeting, so answers start
@@ -193,9 +193,11 @@ change can never give anyone more access than you allowed here.
 
 **Full** runs only when MIA guarantees that just you can talk to your agent
 (the activation code below, or a verified id); otherwise it drops to
-**Ask first**. Antigravity and custom commands cannot ask before acting, so
-**Ask first** runs them as **Meeting only**. A custom `--command` always has your own
-permissions.
+**Ask first**. Custom commands cannot ask before acting, so **Ask first** runs
+them as **Meeting only**. A custom `--command` always has your own permissions.
+ACP agents (Antigravity, Hermes, Copilot, Muse, OpenClaw) ask the bridge before
+each command or file change, and the bridge answers by access level; an action
+your agent's own settings already allow is not asked about.
 
 ## Activation code
 
@@ -228,7 +230,7 @@ Found a problem? See [SECURITY.md](SECURITY.md).
 
 ```text
 $ meetstream-agent-kit doctor --agent claude
-MeetStream Agent Kit 0.3.1 doctor
+MeetStream Agent Kit 0.3.2 doctor
   ✓ python: Python 3.12.8
   ✓ config: /Users/you/.config/meetstream-agent-kit
   ✓ workdir: /Users/you/code/my-project

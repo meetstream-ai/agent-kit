@@ -27,6 +27,7 @@ from typing import Any, Final
 from meetstream_agent_kit.access import AccessLevel
 from meetstream_agent_kit.activation import ActivationGate
 from meetstream_agent_kit.config import BridgeConfig
+from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import (
     APPROVE_TOOL,
     MAX_ANSWER_CHARS,
@@ -151,6 +152,11 @@ class MeetingSession:
 
     def is_current(self, proc: subprocess.Popen[str]) -> bool:
         return proc is self.proc
+
+    def log(self, text: str) -> None:
+        """One line in the bridge terminal (silent in tests)."""
+        if not self.config.quiet:
+            say(f"[session] {self.session_id}: {text}")
 
     def startup_error(self, default: str) -> str:
         """The error a failed start queued, or ``default``."""
