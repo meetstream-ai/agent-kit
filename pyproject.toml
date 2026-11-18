@@ -1,0 +1,114 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meetstream-agent-kit"
+dynamic = ["version"]
+description = "MeetStream Agent Kit live bridge: your own coding agent (Claude Code, Codex, Hermes and more) answers in your meetings through MeetStream MIA."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "MeetStream" }]
+keywords = ["meetstream", "mia", "meeting", "agent", "claude-code", "codex", "acp", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Communications :: Conferencing",
+    "Typing :: Typed",
+]
+# Standard library only, on purpose: nothing to audit but this package.
+dependencies = []
+
+[project.urls]
+Homepage = "https://meetstream.ai"
+Source = "https://github.com/meetstream-ai/agent-kit"
+Issues = "https://github.com/meetstream-ai/agent-kit/issues"
+Changelog = "https://github.com/meetstream-ai/agent-kit/blob/main/CHANGELOG.md"
+
+[project.scripts]
+meetstream-agent-kit = "meetstream_agent_kit.cli:main"
+
+[dependency-groups]
+dev = [
+    "coverage[toml]>=7.6",
+    "pytest>=8.3",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[tool.hatch.version]
+path = "src/meetstream_agent_kit/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meetstream_agent_kit"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/meetstream_agent_kit", "tests", "docs", "scripts", "README.md", "CHANGELOG.md", "SECURITY.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",  # pycodestyle, pyflakes
+    "I",            # import order
+    "B",            # bugbear
+    "UP",           # modern syntax for the target version
+    "SIM", "C4", "PIE", "RET",
+    "N",            # naming
+    "RUF",
+    "S",            # security (bandit rules)
+    "PT",           # pytest style
+    "PTH",          # pathlib
+]
+ignore = [
+    # The bridge's job is to start the user's own agent CLI, by design.
+    "S603",  # subprocess call: argv is built from the agent registry, never from a shell string
+    "S607",  # partial executable path: agent CLIs are found on the user's PATH
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S108", "S310", "N802"]
+"scripts/**" = ["T201"]
+"tests/fixtures/stub_agent.py" = ["S310", "T201", "PTH", "SIM", "RET", "PIE", "C4", "B", "UP", "RUF"]  # a stand-in CLI, kept plain
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src"]
+warn_unreachable = true
+
+[tool.coverage.run]
+source = ["meetstream_agent_kit"]
+branch = true
+# The agent and shim run as child processes; count them too.
+parallel = true
+concurrency = ["thread"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+exclude_also = ["if TYPE_CHECKING:", "if __name__ == .__main__.:"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+xfail_strict = true
+filterwarnings = ["error"]
