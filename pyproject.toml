@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "meetstream-agent-kit"
 dynamic = ["version"]
-description = "MeetStream Agent Kit live bridge: your own coding agent (Claude Code, Codex, Hermes and more) answers in your meetings through MeetStream MIA."
+description = "Bring your own agent into your meetings: Claude Code, Codex, Hermes and more answer out loud in Google Meet, Zoom and Teams through MeetStream MIA."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
@@ -55,7 +55,7 @@ path = "src/meetstream_agent_kit/__init__.py"
 packages = ["src/meetstream_agent_kit"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/meetstream_agent_kit", "tests", "docs", "scripts", "README.md", "CHANGELOG.md", "SECURITY.md", "LICENSE"]
+include = ["src/meetstream_agent_kit", "tests", "docs/protocol.md", "scripts", "README.md", "CHANGELOG.md", "SECURITY.md", "LICENSE"]
 
 [tool.ruff]
 line-length = 110
