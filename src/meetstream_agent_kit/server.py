@@ -29,6 +29,7 @@ from meetstream_agent_kit.constants import (
     MAX_BODY_BYTES,
     MAX_TOOLS,
     MCP_SERVER_NAME,
+    TIMEOUT_REPLY,
 )
 from meetstream_agent_kit.login import LoginChecker
 from meetstream_agent_kit.pairing import PairingError, PairingStore
@@ -381,7 +382,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     self._log(f"[tool] {event['name']}")
                 elif event["type"] == "done":
                     first, total = event.get("first_output_ms"), event.get("total_ms")
-                    self._log(f"[done] first output {first} ms, total {total} ms")
+                    if event.get("timed_out"):
+                        self._log(f"[timeout] stopped after {total} ms; MIA says: {TIMEOUT_REPLY}")
+                    else:
+                        self._log(f"[done] first output {first} ms, total {total} ms")
+                elif event["type"] == "error":  # never silent: every failed turn shows here
+                    self._log(f"[error] {event.get('code')}: {str(event.get('message') or '')[:200]}")
                 self._chunk(event)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
@@ -474,5 +480,5 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
 def _prime(session: MeetingSession) -> None:
     """One tiny turn so the agent's prompt cache is warm before anyone speaks."""
-    for _ in session.run_turn(_PRIME_TURN):
+    for _ in session.run_turn(_PRIME_TURN, warmup=True):
         pass

@@ -86,16 +86,31 @@ The response is `application/x-ndjson`, sent in chunks. Each line is one of:
 |---|---|---|
 | `delta` | `text` | answer text as it is written; speak it at once |
 | `tool_call` | `call_id`, `name`, `arguments` (JSON string) | run this meeting tool, then call `/v1/tool_result` |
-| `done` | `text`, `first_output_ms`, `total_ms`, `warm` | the turn is over |
+| `done` | `text`, `first_output_ms`, `total_ms`, `warm`; `timed_out: true` when stopped for time | the turn is over |
 | `error` | `code`, `message` | the turn failed |
 
 The `code` of an `error` line is one of:
 
 - `auth_required`: the line also has `relogin`.
 - `agent_error`
-- `timeout`
+- `timeout`: no longer sent for a slow turn (see below); kept for older bridges.
 - `cancelled`
-- `busy`
+- `busy`: only when a running turn could not be stopped within 15 s.
+
+**A turn never goes silent.** A warm turn with no output for `--timeout`
+seconds (default 60; the clock pauses while a meeting tool waits on MIA), or a
+one-run-per-turn agent that takes that long in all, is stopped: the bridge asks
+the agent to cancel (ACP `session/cancel`), keeps the session when it does and
+restarts it when it does not. The turn then ends with the delta
+`"That took too long, so I stopped it."` and a `done` line with
+`timed_out: true`, so MIA has something to say. 60 s stays under MIA's own
+120 s read timeout.
+
+**One turn at a time.** MIA runs one turn per meeting at a time, so a turn
+that arrives while another is still running means MIA gave up on that one:
+the bridge cancels it (that stream ends with `cancelled`) and runs the new
+turn, instead of queueing it. The warm-up turn at meeting start is waited out
+instead.
 
 With the activation code on and not yet claimed, the turn gets
 `403 {"error": "locked", "claim": "pending"}`.

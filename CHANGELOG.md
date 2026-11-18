@@ -12,6 +12,22 @@ All notable changes to this package. The format follows
   stream-json, which has no way to add an MCP server, so MIA's tools never
   reached it (MIA logged `tools=0`). It now runs `agy acp`, and the meeting
   tools go in `session/new` through the same stdio shim the other ACP agents use.
+- A turn could hang silently (Antigravity over ACP, live meeting): the bridge
+  waited up to 170 s, longer than MIA's own 120 s, so MIA stopped reading, its
+  next turns queued behind the stuck one and got `busy`, and the bridge log
+  showed nothing, because only finished turns were logged. Now:
+  - a warm turn with no output for `--timeout` (default **60 s**, was a 170 s
+    total; the clock pauses while a meeting tool waits on MIA) is cancelled
+    (ACP `session/cancel`; the agent is restarted only if it does not stop),
+    and the turn ends with the spoken reply "That took too long, so I stopped
+    it." (`done` with `timed_out: true`), so later turns still work;
+  - a new turn stops a turn MIA gave up on instead of queueing behind it (the
+    warm-up turn is still waited out);
+  - every failed or stopped turn is logged (`[error] …`, `[timeout] …`);
+  - every request an ACP agent sends gets an answer, even a malformed one;
+    permission options are matched by ACP kind, then by name ("Allow"/"Deny");
+  - `serve --debug` (or `MS_AGENT_KIT_DEBUG=1`) logs each ACP message type in
+    and out, and permission decisions, never the text.
 
 ### Changed
 

@@ -219,23 +219,29 @@ def _acp(msg, pending):
             ask_id = 9001
             box = queue.Queue()
             pending[ask_id] = box
-            emit(
-                {
-                    "jsonrpc": "2.0",
-                    "id": ask_id,
-                    "method": "session/request_permission",
-                    "params": {
-                        "sessionId": "sess_1",
-                        "toolCall": {"toolCallId": "t1", "kind": "execute", "title": "rm -rf /"},
-                        "options": [
-                            {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
-                            {"optionId": "no", "name": "Deny", "kind": "reject_once"},
-                        ],
-                    },
-                }
-            )
-            outcome = box.get(timeout=10)["result"]["outcome"]
-            answer = f"permission {outcome.get('optionId') or outcome.get('outcome')}"
+            options = [
+                {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "no", "name": "Deny", "kind": "reject_once"},
+            ]
+            params = {
+                "sessionId": "sess_1",
+                "toolCall": {"toolCallId": "t1", "kind": "execute", "title": "rm -rf /"},
+                "options": options,
+            }
+            if "NAMED_PERMISSION" in text:  # options told apart only by their names
+                params["options"] = [
+                    {"optionId": "a1", "name": "Allow", "kind": "other"},
+                    {"optionId": "d1", "name": "Deny", "kind": "other"},
+                ]
+            if "BAD_PERMISSION" in text:  # malformed: the bridge must still answer
+                params = {"sessionId": "sess_1", "toolCall": "not an object", "options": ["?", 3]}
+            emit({"jsonrpc": "2.0", "id": ask_id, "method": "session/request_permission", "params": params})
+            reply = box.get(timeout=10)
+            if "error" in reply:
+                answer = "permission error"
+            else:
+                outcome = reply["result"]["outcome"]
+                answer = f"permission {outcome.get('optionId') or outcome.get('outcome')}"
         if "SLOW" in text:
             _acp.cancelled = False
             for _ in range(500):

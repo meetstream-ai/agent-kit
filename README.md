@@ -254,6 +254,7 @@ MeetStream Agent Kit 0.3.2 doctor
 | `login: expired` | run the sign-in command from [Supported agents](#supported-agents); MIA picks it up within 30 seconds |
 | setup: `ngrok is not connected to an ngrok account` | copy your authtoken from the ngrok dashboard and run `ngrok config add-authtoken <your authtoken>`, then pick **Check again** |
 | setup: `… ran but sent back no answer` | usually a sign-in the CLI is waiting for: pick **Sign in now**, or run the agent once on its own to see what it asks |
+| MIA says "That took too long, so I stopped it." | your agent gave no output for 60 s (`--timeout`); the bridge log shows `[timeout]`. Run `serve --debug` to see what the agent was doing (for example waiting on a permission or a long command) |
 | MIA says your agent is not reachable | check that `serve` and the tunnel are both running, and that MIA has the tunnel's current address |
 
 ## Commands
@@ -271,6 +272,8 @@ MeetStream Agent Kit 0.3.2 doctor
 `serve`, `doctor` and `bench` take `--agent`, `--command`, `--binary`,
 `--workdir`, `--owner`, `--model`, `--effort` and `--timeout`. `serve` also
 takes `--port`, `--max-access` (`readonly`, `confirm` or `full`), `--no-prime`,
+`--debug` (log each message type the agent sends, never the text; also
+`MS_AGENT_KIT_DEBUG=1`),
 and `--tunnel` (`cloudflare`, `ngrok`, `url` or `none`) with `--tunnel-url` for
 an ngrok static domain or your own address. `MEETSTREAM_AGENT_KIT_HOME` moves the config folder. Every
 command has `--help`.

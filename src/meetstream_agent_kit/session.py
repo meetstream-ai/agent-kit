@@ -30,8 +30,11 @@ from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import (
     APPROVE_TOOL,
+    CANCEL_GRACE_S,
     MAX_ANSWER_CHARS,
     MCP_SECRET_ENV,
+    PREEMPT_WAIT_S,
+    TIMEOUT_REPLY,
     TOOL_RESULT_TIMEOUT_S,
 )
 from meetstream_agent_kit.drivers import Driver, make_driver
@@ -80,6 +83,7 @@ class MeetingSession:
         self.activation: ActivationGate | None = None
         self.mcp_secret = secrets.token_urlsafe(24)
         self.started_turns = 0
+        self._warmup_running = False
         self.mcp_tools_listed: int | None = None
         """How many meeting tools the agent loaded over MCP (None until it asks)."""
         self.proc: subprocess.Popen[str] | None = None
@@ -160,6 +164,11 @@ class MeetingSession:
         if not self.config.quiet:
             say(f"[session] {self.session_id}: {text}")
 
+    def debug(self, text: str) -> None:
+        """A protocol trace line, only with ``--debug`` / ``MS_AGENT_KIT_DEBUG=1``."""
+        if self.config.debug:
+            say(f"[debug] {self.session_id}: {text}")
+
     def startup_error(self, default: str) -> str:
         """The error a failed start queued, or ``default``."""
         if not self.events.empty():
@@ -229,11 +238,22 @@ class MeetingSession:
 
     # Turns --------------------------------------------------------------------
 
-    def run_turn(self, text: str) -> Iterator[Event]:
-        """Run one turn; yield its events."""
-        if not self._turn_lock.acquire(timeout=15):  # waits out the warm-up turn; never two at once
-            yield {"type": "error", "code": "busy", "message": "a turn is already running"}
-            return
+    def run_turn(self, text: str, *, warmup: bool = False) -> Iterator[Event]:
+        """Run one turn; yield its events. Never two at once.
+
+        MIA runs one turn at a time, so a turn that arrives while another runs
+        means MIA gave up on that one: it is stopped, not queued behind. The
+        warm-up turn at meeting start is waited out instead (up to 15 s).
+        """
+        if not self._turn_lock.acquire(timeout=PREEMPT_WAIT_S):
+            if not self._warmup_running:
+                self.log("a new turn arrived while the last one was still running: stopped the last one")
+                self.cancel()
+            if not self._turn_lock.acquire(timeout=15):
+                self.log("the last turn did not stop in 15 s: this turn was dropped")
+                yield {"type": "error", "code": "busy", "message": "a turn is already running"}
+                return
+        self._warmup_running = warmup
         try:
             self._cancel.clear()
             if self.driver is not None:
@@ -241,6 +261,7 @@ class MeetingSession:
             else:
                 yield from self._oneshot_turn(text)
         finally:
+            self._warmup_running = False
             self._turn_lock.release()
 
     def _warm_turn(self, driver: Driver, text: str) -> Iterator[Event]:
@@ -263,25 +284,25 @@ class MeetingSession:
         self.started_turns += 1
         first_ms: float | None = None
         chunks: list[str] = []
-        deadline = t0 + self.config.timeout_s
+        idle_limit = self.config.timeout_s
+        last_activity = t0
         while True:
             if self.cancelled:
                 yield _cancelled()
                 return
             try:
-                item = self.events.get(timeout=max(0.05, min(0.5, deadline - time.monotonic())))
+                wait = last_activity + idle_limit - time.monotonic()
+                item = self.events.get(timeout=max(0.05, min(0.5, wait)))
             except queue.Empty:
-                if time.monotonic() >= deadline:
-                    self.restart()
-                    yield {
-                        "type": "error",
-                        "code": "timeout",
-                        "message": f"no answer within {int(self.config.timeout_s)} s",
-                    }
+                if self.pending_tool_calls():
+                    last_activity = time.monotonic()  # waiting on MIA, not on the agent
+                elif time.monotonic() >= last_activity + idle_limit:
+                    yield from self._timed_out(driver, chunks, first_ms, t0)
                     return
                 continue
             if item is TURN_END:
                 break
+            last_activity = time.monotonic()
             kind, value = item
             if kind == "wake":  # cancel() woke the loop; the check at the top ends the turn
                 continue
@@ -313,6 +334,33 @@ class MeetingSession:
             "total_ms": round((time.monotonic() - t0) * 1000, 1),
             "warm": True,
         }
+
+    def _timed_out(
+        self, driver: Driver, chunks: list[str], first_ms: float | None, t0: float
+    ) -> Iterator[Event]:
+        """No output for too long: ask the agent to stop, keep the session if it does, say so."""
+        self.log(f"no output for {int(self.config.timeout_s)} s: stopping the turn")
+        proc = self.proc
+        self.cancel()
+        if not self._wait_turn_end(CANCEL_GRACE_S, proc):
+            self.log("the agent did not stop the turn: restarting it (the conversation is kept)")
+            self.restart()
+        yield from _timeout_reply(chunks, first_ms, t0, warm=True)
+
+    def _wait_turn_end(self, timeout_s: float, proc: subprocess.Popen[str] | None) -> bool:
+        """After a cancel: wait for the agent to end its turn (or for the driver's own restart,
+        which is how stream-json agents stop). False if neither happens in time."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.proc is not proc:
+                return True
+            try:
+                item = self.events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is TURN_END or (isinstance(item, tuple) and item[0] in ("rpc_done", "error", "exit")):
+                return True
+        return False
 
     def _oneshot_turn(self, text: str) -> Iterator[Event]:
         cfg = self.config
@@ -348,6 +396,9 @@ class MeetingSession:
                 "total_ms": round(result.total_ms, 1),
                 "warm": False,
             }
+        elif result.error and "timed out" in result.error:
+            self.log(f"no answer within {int(cfg.timeout_s)} s: stopped the run")
+            yield from _timeout_reply([], None, time.monotonic() - result.total_ms / 1000, warm=False)
         else:
             yield _error(result.error or "the agent returned no answer")
 
@@ -424,6 +475,20 @@ def _drain(proc: subprocess.Popen[str]) -> None:
         for _ in proc.stderr:
             pass
         close_stream(proc.stderr)
+
+
+def _timeout_reply(chunks: list[str], first_ms: float | None, t0: float, *, warm: bool) -> Iterator[Event]:
+    """What MIA gets when a turn is stopped for taking too long: a short sentence to speak."""
+    said = "".join(chunks).strip()
+    yield {"type": "delta", "text": (" " if said else "") + TIMEOUT_REPLY}
+    yield {
+        "type": "done",
+        "text": f"{said} {TIMEOUT_REPLY}".strip(),
+        "timed_out": True,
+        "first_output_ms": None if first_ms is None else round(first_ms, 1),
+        "total_ms": round((time.monotonic() - t0) * 1000, 1),
+        "warm": warm,
+    }
 
 
 def _error(message: str) -> Event:
