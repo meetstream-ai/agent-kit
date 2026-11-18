@@ -51,6 +51,12 @@ class AgentSpec:
     login_check: tuple[str, ...] | None = None
     """Side-effect-free login check (arguments after the binary), or None when the CLI has none."""
     login_ok_codes: tuple[int, ...] = (0,)
+    install: str = ""
+    """The vendor's official install command (a shell line), shown before setup offers to run it."""
+    install_needs: tuple[str, ...] = ()
+    """Programs the install command needs (checked before it runs)."""
+    after_install: str = ""
+    """The vendor's first-run setup command, offered right after installing (when there is one)."""
 
     @property
     def can_confirm(self) -> bool:
@@ -64,6 +70,10 @@ class AgentSpec:
         if not effort:
             return []
         return [part.replace("{effort}", effort) for part in self.effort_args]
+
+
+_CURL: Final = "curl -fsSL "
+_BASH: Final = " | bash"
 
 
 def _not_on_path(binary: str, label: str) -> str:
@@ -95,6 +105,8 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             login_check=("auth", "status"),
             relogin="claude auth login",
             install_hint="Install Claude Code: npm install -g @anthropic-ai/claude-code",
+            install="npm install -g @anthropic-ai/claude-code",
+            install_needs=("npm",),
         ),
         # Codex never streams token deltas one-shot (the answer arrives whole);
         # its warm mode, `codex app-server`, does. Read-only is its default sandbox.
@@ -113,6 +125,8 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             login_check=("login", "status"),
             relogin="codex login",
             install_hint="Install Codex CLI: npm install -g @openai/codex",
+            install="npm install -g @openai/codex",
+            install_needs=("npm",),
         ),
         # Copilot's JSONL schema is not documented, so -s (answer text only).
         AgentSpec(
@@ -130,6 +144,8 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             model_flag="--model",
             relogin="copilot login",
             install_hint="Install GitHub Copilot CLI: npm install -g @github/copilot",
+            install="npm install -g @github/copilot",
+            install_needs=("npm",),
         ),
         # Antigravity: `agy acp` for warm sessions, so the meeting tools reach it as a
         # per-session MCP server (its stream-json mode has no MCP flag). Under ACP it
@@ -149,7 +165,9 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             full_args=("--mode=accept-edits",),
             model_flag="--model",
             relogin="agy acp --login",
-            install_hint=_not_on_path("agy", "the Antigravity CLI"),
+            install_hint=f"Install the Antigravity CLI: {_CURL}https://antigravity.google/cli/install.sh{_BASH}",
+            install="curl -fsSL https://antigravity.google/cli/install.sh | bash",
+            install_needs=("curl", "bash"),
         ),
         AgentSpec(
             name="muse",
@@ -162,7 +180,9 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             acp_args=("acp",),
             full_args=("--disable-approval",),
             relogin="muse   (sign in when prompted)",
-            install_hint=_not_on_path("muse", "Muse Code"),
+            install_hint=f"Install Muse Code: {_CURL}https://dev.meta.ai/install.sh{_BASH}",
+            install="curl -fsSL https://dev.meta.ai/install.sh | bash",
+            install_needs=("curl", "bash"),
         ),
         # Hermes Agent: ACP for warm sessions, -z for single runs. Under ACP the
         # bridge decides every edit/delete/move/execute permission request.
@@ -180,7 +200,9 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             model_flag="-m",
             model_env="HERMES_INFERENCE_MODEL",
             relogin="hermes setup",
-            install_hint=_not_on_path("hermes", "Hermes Agent"),
+            install_hint=f"Install Hermes Agent: {_CURL}https://hermes-agent.nousresearch.com/install.sh{_BASH}",
+            install="curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+            install_needs=("curl", "bash"),
         ),
         # OpenClaw: turns go through its Gateway. `openclaw acp` rejects
         # per-session MCP servers, so meeting tools are not offered (text only).
@@ -199,7 +221,13 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             login_check=("models", "status", "--json", "--check"),
             login_ok_codes=(0, 2),  # 2 = expiring soon, still usable
             relogin="openclaw models auth login --provider <your provider>",
-            install_hint=_not_on_path("openclaw", "OpenClaw (and run `openclaw onboard --install-daemon`)"),
+            install_hint=(
+                "Install OpenClaw: curl -fsSL https://openclaw.ai/install.sh | bash, "
+                "then run: openclaw onboard --install-daemon"
+            ),
+            install="curl -fsSL https://openclaw.ai/install.sh | bash",
+            install_needs=("curl", "bash"),
+            after_install="openclaw onboard --install-daemon",
         ),
     )
 }

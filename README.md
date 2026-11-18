@@ -75,7 +75,8 @@ meetstream-agent-kit
 
 It walks you through six short steps, with arrow-key menus: which agent should
 answer (it lists the ones it finds on your computer and checks they are signed
-in), the folder it works in, the most access this computer allows, how
+in; pick one that is missing and it shows the vendor's official install command
+and offers to run it), the folder it works in, the most access this computer allows, how
 MeetStream reaches your computer, and your name. Then it tests your agent.
 
 - **Cloudflare quick tunnel:** no account needed. The address changes each time it starts.

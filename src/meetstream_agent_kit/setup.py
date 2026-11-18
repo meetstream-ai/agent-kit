@@ -202,12 +202,95 @@ class Prompter:
 # ── Step 1: the agent ─────────────────────────────────────────────────────────
 
 
-def _pick_agent(prompt: Prompter, which: Callable[[str], str | None], last: str) -> tuple[AgentSpec, str]:
+_PREREQUISITE_HELP: Final[dict[str, str]] = {
+    "npm": "npm comes with Node.js: https://nodejs.org/en/download"
+    + (" (or: brew install node)" if sys.platform == "darwin" else ""),
+    "curl": "Install curl with your system's package manager (for example: sudo apt install curl).",
+    "bash": "Install bash with your system's package manager.",
+}
+
+_INSTALL_DIRS: Final = (Path.home() / ".local" / "bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin"))
+"""Where installers commonly put a CLI, for when the new command is not on PATH yet."""
+
+
+def _installed_off_path(binary: str) -> Path | None:
+    for folder in _INSTALL_DIRS:
+        candidate = folder / binary
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def _offer_install(
+    prompt: Prompter,
+    agent: AgentSpec,
+    which: Callable[[str], str | None],
+    run: Callable[[list[str]], int],
+    offer: bool,
+) -> bool:
+    """Show the vendor's install command and, at a terminal, offer to run it. True once installed."""
+    ui.fail(f"{agent.label} is not on this computer.")
+    if not agent.install:
+        ui.note(agent.install_hint)
+        ui.note("Install it, or pick another agent.")
+        return False
+    ui.note(f"Official install command for {agent.label}:")
+    ui.command(agent.install)
+    if not offer:
+        ui.note("Run it, then run setup again, or pick another agent.")
+        return False
+    missing = next((program for program in agent.install_needs if which(program) is None), None)
+    if missing:
+        ui.fail(f"The install command needs {missing}, which is not on this computer.")
+        ui.note(_PREREQUISITE_HELP.get(missing, f"Install {missing} first."))
+        return False
+    if not prompt.confirm(f"Install {agent.label} now?"):
+        return False
+    ui.note("Running the installer here; its output follows.")
+    code = run(["/bin/sh", "-c", agent.install])  # a fixed command from the agent registry, never user input
+    if code != 0:
+        ui.fail(f"The installer stopped with exit code {code}. Fix what it says, or pick another agent.")
+        return False
+    found = which(agent.binary)
+    if found is None:
+        off_path = _installed_off_path(agent.binary)
+        if off_path is None:
+            ui.fail(f"Installed, but `{agent.binary}` is not on your PATH yet.")
+            ui.note("Open a new terminal window and run setup again.")
+            return False
+        folder = str(off_path.parent)
+        os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
+        ui.warn(f"`{agent.binary}` is in {folder}, which is not on your PATH. Add it to your shell profile:")
+        ui.command(f'export PATH="{folder}:$PATH"')
+        found = str(off_path)
+    ui.ok(f"{agent.label} installed: {found}")
+    first_run = agent.after_install.split() or (
+        None if agent.login_check else checks.login_argv(agent)
+    )  # agents with a login check are asked in the sign-in step that follows
+    if first_run and prompt.confirm(f"Sign in and set it up now ({' '.join(first_run)})?"):
+        ui.note("Signing in is yours to do: follow the agent's own prompts.")
+        run(first_run)
+    return True
+
+
+def _pick_agent(
+    prompt: Prompter,
+    which: Callable[[str], str | None],
+    last: str,
+    run: Callable[[list[str]], int] = lambda argv: subprocess.call(argv),
+    offer_install: bool | None = None,
+) -> tuple[AgentSpec, str]:
+    offer = prompt.interactive if offer_install is None else offer_install
     agents = list(AGENTS.values())
     installed = [i for i, a in enumerate(agents) if which(a.binary) is not None]
     default = next((i for i, a in enumerate(agents) if a.name == last), installed[0] if installed else 0)
     labels = [a.label for a in agents] + ["Another command"]
-    hints = ["installed" if i in installed else "not found" for i in range(len(agents))]
+    hints = [
+        "installed"
+        if i in installed
+        else ("not installed; setup can install it" if a.install else "not found")
+        for i, a in enumerate(agents)
+    ]
     hints.append("any CLI that reads a prompt")
     while True:
         index = prompt.choose("Which agent should answer for MIA?", labels, default, hints)
@@ -221,9 +304,7 @@ def _pick_agent(prompt: Prompter, which: Callable[[str], str | None], last: str)
                     raise SetupAbortedError("no agent command given") from exc
                 continue
         agent = agents[index]
-        if which(agent.binary) is None:
-            ui.fail(f"{agent.label} is not on this computer. {agent.install_hint}")
-            ui.note("Install it, or pick another agent.")
+        if which(agent.binary) is None and not _offer_install(prompt, agent, which, run, offer):
             if prompt.eof:
                 raise SetupAbortedError(f"{agent.label} is not installed")
             continue
@@ -371,10 +452,15 @@ def ask_setup(
     cwd: str | None = None,
     detect_ngrok: Callable[[], NgrokSetup] = read_ngrok_setup,
     probe_ngrok: Callable[[str], tuple[str, str]] = probe_ngrok_address,
+    offer_install: bool | None = None,
 ) -> SetupAnswers:
-    """All the questions, in order. Returns the answers; nothing starts here."""
+    """All the questions, in order. Returns the answers; nothing starts here.
+
+    ``offer_install`` (default: only at a terminal) lets setup run a missing agent's
+    official install command after a yes; otherwise the command is only shown.
+    """
     ui.step(1, SETUP_STEPS, "Agent")
-    agent, command = _pick_agent(prompt, which, last.agent if last else "")
+    agent, command = _pick_agent(prompt, which, last.agent if last else "", run, offer_install)
     binary = checks.resolve_binary(agent)
     if binary and not command:
         _check_login(prompt, agent, binary, run)
