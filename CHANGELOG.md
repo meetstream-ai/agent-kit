@@ -15,6 +15,16 @@ All notable changes to this package. The format follows
 
 ### Changed
 
+- Setup offers to install a missing agent. It shows the vendor's official
+  install command (`npm install -g …` for Claude Code, Codex and Copilot; the
+  vendor's own install script for Antigravity, Muse, Hermes and OpenClaw),
+  checks what that command needs (npm, curl, bash) and says where to get a
+  missing one, then runs it in the foreground after a yes. When the new command
+  is not on PATH yet, it finds it in the usual install folders and prints the
+  line to add to your shell profile. Then it offers the agent's own sign-in (or
+  OpenClaw's onboarding); signing in stays yours. Without a terminal it only
+  prints the command. `doctor` and the not-installed messages show the same
+  command.
 - Antigravity's command and file-change requests (Allow/Deny over ACP) are
   answered by access level, so **Ask first** works for it (it used to run as
   **Meeting only**). MIA's model choice is sent with `session/set_model`; if

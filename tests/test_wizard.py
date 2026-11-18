@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -415,3 +416,138 @@ def test_an_arrow_key_that_arrives_in_pieces_still_counts() -> None:
     # Over a slow link the escape byte and the rest of the sequence come in separate reads.
     out = _menu_in_a_terminal([b"\x1b", b"[B", b"\r"], gap_s=0.03)
     assert "PICKED 1" in out
+
+
+# ── Installing a missing agent from setup ────────────────────────────────────
+
+_OFFICIAL_SOURCES = (
+    "npm install -g @anthropic-ai/claude-code",
+    "npm install -g @openai/codex",
+    "npm install -g @github/copilot",
+    "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+    "curl -fsSL https://dev.meta.ai/install.sh | bash",
+    "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+    "curl -fsSL https://openclaw.ai/install.sh | bash",
+)
+
+
+def test_every_built_in_agent_has_its_vendors_install_command() -> None:
+    assert sorted(a.install for a in AGENTS.values()) == sorted(_OFFICIAL_SOURCES)
+    for agent in AGENTS.values():
+        assert agent.install in agent.install_hint  # doctor and notifications show the same command
+        assert agent.install_needs
+
+
+class _Machine:
+    """A pretend computer: which programs exist, and what installers do."""
+
+    def __init__(self, *present: str, installs: bool = True, exit_code: int = 0) -> None:
+        self.present = set(present)
+        self.installs = installs
+        self.exit_code = exit_code
+        self.ran: list[list[str]] = []
+
+    def which(self, program: str) -> str | None:
+        return f"/usr/bin/{program}" if program in self.present else None
+
+    def run(self, argv: list[str]) -> int:
+        self.ran.append(argv)
+        if argv[:2] == ["/bin/sh", "-c"] and self.installs:
+            binary = next(a.binary for a in AGENTS.values() if a.install == argv[2])
+            self.present.add(binary)
+        return self.exit_code
+
+
+def _setup(tmp_path: Path, machine: _Machine, *replies: str, offer: bool = True) -> Any:
+    rest = ("", "", "4", "Nav")  # folder, access, no tunnel, name
+    return ask_setup(
+        _replies(*replies, *rest),
+        None,
+        which=machine.which,
+        run=machine.run,
+        cwd=str(tmp_path),
+        offer_install=offer,
+    )
+
+
+def test_missing_agent_is_installed_then_signed_in(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    machine = _Machine("curl", "bash")
+    answers = _setup(tmp_path, machine, "4", "", "")  # Antigravity, install: yes, sign in: yes
+    out = capsys.readouterr().out
+    assert answers.agent == "agy"
+    assert machine.ran == [
+        ["/bin/sh", "-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"],
+        ["agy", "acp", "--login"],  # signing in is the agent's own prompt, run in the foreground
+    ]
+    assert "Official install command for Antigravity CLI" in out
+    assert "Antigravity CLI installed: /usr/bin/agy" in out
+
+
+def test_declining_the_install_runs_nothing(tmp_path: Path) -> None:
+    machine = _Machine("curl", "bash")
+    answers = _setup(tmp_path, machine, "4", "n", "8", "my-agent")  # no, then another command
+    assert machine.ran == []
+    assert answers.command == "my-agent"
+
+
+def test_a_missing_prerequisite_is_named_with_where_to_get_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    machine = _Machine()  # no npm
+    _setup(tmp_path, machine, "1", "8", "my-agent")
+    out = capsys.readouterr().out
+    assert "npm install -g @anthropic-ai/claude-code" in out
+    assert "needs npm" in out
+    assert "nodejs.org" in out
+    assert machine.ran == []
+
+
+def test_a_failed_installer_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    machine = _Machine("npm", installs=False, exit_code=1)
+    _setup(tmp_path, machine, "2", "", "8", "my-agent")
+    assert "exit code 1" in capsys.readouterr().out
+    assert machine.ran == [["/bin/sh", "-c", "npm install -g @openai/codex"]]
+
+
+def test_no_terminal_only_shows_the_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    machine = _Machine("curl", "bash")
+    _setup(tmp_path, machine, "6", "8", "my-agent", offer=False)
+    out = capsys.readouterr().out
+    assert "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash" in out
+    assert "now?" not in out
+    assert machine.ran == []
+
+
+def test_an_agent_installed_off_path_is_found_and_explained(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from meetstream_agent_kit import setup as setup_mod
+
+    bin_dir = tmp_path / "local-bin"
+    bin_dir.mkdir()
+    monkeypatch.setattr(setup_mod, "_INSTALL_DIRS", (bin_dir,))
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))  # restored after the test
+
+    class OffPath(_Machine):
+        def run(self, argv: list[str]) -> int:
+            self.ran.append(argv)
+            if argv[:2] == ["/bin/sh", "-c"]:
+                (bin_dir / "muse").write_text("#!/bin/sh\n", encoding="utf-8")
+                (bin_dir / "muse").chmod(0o755)
+            return 0
+
+    machine = OffPath("curl", "bash")
+    answers = _setup(tmp_path, machine, "5", "", "n")  # Muse, install, do not sign in now
+    out = capsys.readouterr().out
+    assert answers.agent == "muse"
+    assert f'export PATH="{bin_dir}:$PATH"' in out
+    assert os.environ["PATH"].startswith(str(bin_dir))
+    assert machine.ran == [["/bin/sh", "-c", "curl -fsSL https://dev.meta.ai/install.sh | bash"]]
+
+
+def test_openclaw_offers_its_own_first_run_setup(tmp_path: Path) -> None:
+    machine = _Machine("curl", "bash")
+    _setup(tmp_path, machine, "7", "", "")
+    assert machine.ran[-1] == ["openclaw", "onboard", "--install-daemon"]
