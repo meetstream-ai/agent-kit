@@ -37,6 +37,11 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "home"
     monkeypatch.setenv("MEETSTREAM_AGENT_KIT_HOME", str(path))
     monkeypatch.setenv("MEETSTREAM_AGENT_KIT_WORKSPACE", str(tmp_path / "MeetStream Agent"))
+
+    def offline(_url: str, _timeout: float) -> bytes:
+        raise OSError("tests never reach the network")
+
+    monkeypatch.setattr("meetstream_agent_kit.shared_estimates._fetch", offline)
     monkeypatch.setenv("MIA_BRIDGE_HOME", str(tmp_path / "legacy"))
     monkeypatch.setattr("meetstream_agent_kit.console.shutil.which", lambda name: None)
     for name in (
