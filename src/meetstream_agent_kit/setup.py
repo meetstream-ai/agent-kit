@@ -466,7 +466,7 @@ def _pick_model(
             vision_source=vision.source,
         )
         measurable = [*shown, cli_default]
-        cached = estimates.load(agent.name)
+        cached = estimates.load_with_shared(agent.name)
         largest = max(
             (project_hour(cached[m.id].usage).total for m in measurable if m.id in cached), default=0
         )

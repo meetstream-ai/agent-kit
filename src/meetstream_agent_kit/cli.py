@@ -22,10 +22,11 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
-from meetstream_agent_kit import __version__, checks, context, estimates, ui, warm_check
+from meetstream_agent_kit import __version__, checks, context, estimates, shared_estimates, ui, warm_check
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
 from meetstream_agent_kit.compare import Measured, chart_lines, compare
@@ -591,6 +592,15 @@ def cmd_bench_compare(args: argparse.Namespace) -> int:
     say("")
     for line in chart_lines(results, assumptions, selected=config.model):
         say(line)
+    if args.export:
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        entries = [
+            shared_estimates.entry(config.agent.name, r.model, r.usage, r.first_output_ms, stamp)
+            for r in results
+            if r.usage and not r.error
+        ]
+        total = shared_estimates.export(Path(args.export), entries)
+        say(f"\nWrote {len(entries)} measurement(s) to {args.export} ({total} model(s) in the file).")
     return EXIT_OK if any(r.usage for r in results) else EXIT_FAILED
 
 
@@ -778,6 +788,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--compare",
         action="store_true",
         help="compare models by estimated tokens per hour of meeting (one short real turn each), as a chart",
+    )
+    bench.add_argument(
+        "--export",
+        metavar="FILE",
+        help="with --compare: write or merge MeetStream's shared model-estimates.json (nothing is uploaded)",
     )
     bench.add_argument("--models", help="with --compare: comma-separated model ids (default: the CLI's list)")
     bench.add_argument(

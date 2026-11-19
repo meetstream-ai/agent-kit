@@ -4,6 +4,27 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.5] - Unreleased
+
+### Added
+
+- Shared model estimates: the model picker shows MeetStream's measurements for
+  models you have not measured yourself, labelled "measured by MeetStream
+  <date>" (the row says "MS 11-18"). Setup reads
+  `https://meetstream-public-images.s3.amazonaws.com/agent-kit/model-estimates.json`
+  at most once a day (cached in the kit's folder, 3 s timeout); offline or
+  missing, it uses the copy bundled in the package. Your own measurements win
+  and never leave your computer. Models in neither say "not measured yet",
+  with "Measure live".
+- `bench --compare --export model-estimates.json` writes (or merges into) that
+  file: per agent and model, the measured turn (input, cached, output,
+  thinking, cost where the CLI reports one), the one-hour projection, the cold
+  time to first words, `measured_at`, the kit version and the assumptions.
+  Nothing is uploaded.
+- The bundled copy is seeded with the real runs of 2026-11-18: Antigravity
+  (gemini-3.8-flash low/medium/high, claude-sonnet-4-6) and Claude Code
+  (haiku, sonnet).
+
 ## [0.3.4] - Unreleased
 
 ### Added

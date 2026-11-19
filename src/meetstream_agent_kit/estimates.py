@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from meetstream_agent_kit import ui
+from meetstream_agent_kit import shared_estimates, ui
 from meetstream_agent_kit.agents import AgentSpec
 from meetstream_agent_kit.models import ModelChoice, features
 from meetstream_agent_kit.pairing import default_home
@@ -28,6 +28,8 @@ class Estimate:
     seconds: float
     first_output_ms: float | None
     measured_at: str
+    source: str = "measured here"
+    """``measured here`` (your own runs) or ``measured by MeetStream <date>`` (the shared file)."""
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -75,6 +77,30 @@ def load(agent: str) -> dict[str, Estimate]:
             stamp,
         )
     return estimates
+
+
+def load_with_shared(agent: str, shared: list[dict[str, Any]] | None = None) -> dict[str, Estimate]:
+    """Your own measurements, then MeetStream's shared estimates for models you have not measured."""
+    found = load(agent)
+    entries = shared_estimates.load() if shared is None else shared
+    for model, item in shared_estimates.for_agent(agent, entries).items():
+        if model in found:
+            continue
+        turn = item["turn"]
+        found[model] = Estimate(
+            Usage(
+                int(turn["input"]),
+                int(turn["cached"]),
+                int(turn["output"]),
+                int(turn["thinking"]),
+                turn.get("cost_usd"),
+            ),
+            0.0,
+            item.get("first_output_ms"),
+            item["measured_at"],
+            f"measured by MeetStream {item['measured_at'][:10]}",
+        )
+    return found
 
 
 def save(agent: str, model: str, measured: Measured) -> None:
@@ -128,6 +154,8 @@ def row_text(
         if estimate and estimate.first_output_ms is not None
         else "—"
     )
+    if estimate and estimate.source.startswith("measured by MeetStream "):
+        speed += "  " + ui.paint("MS " + estimate.measured_at[5:10], "dim")  # the detail line spells it out
     tail = f"[{ui.paint(filled.ljust(10), 'cyan')}] {usage}  {' '.join(chips)}  {speed}"
     room = ui.width() - 6  # space for a two-digit menu number or the arrow
     name_width = max(8, min(name_width, room - len(ui.plain(tail)) - 2))
@@ -146,6 +174,7 @@ def detail_text(agent: AgentSpec, model: ModelChoice, estimate: Estimate | None)
             f"first words ~{estimate.first_output_ms / 1000:.0f} s (cold)"
             if estimate.first_output_ms is not None
             else "first words —",
+            estimate.source,
         ]
     else:
         parts.append("not measured yet")
