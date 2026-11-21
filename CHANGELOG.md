@@ -40,6 +40,12 @@ All notable changes to this package. The format follows
   over 30 s), and says how many more models your signed-in providers offer
   ("Type another model id" takes provider:model). Only Copilot's Auto skips
   the menu. A list that falls back to the CLI's settings names that source.
+- Muse Code's installer leaves a small launcher that downloads the ~456 MB app
+  on first run. When that download died, setup still said "Muse Code found".
+  Setup now checks for the app beside the launcher: the agent menu says
+  "launcher only; app not downloaded yet", and at a terminal setup offers to
+  run the launcher's own download (`MUSE_LAUNCHER_INSTALL=1 muse`) with a
+  retry, instead of moving on.
 - API-rate prices matched the provider instead of the model for Hermes ids
   such as `openai-codex:gpt-6.2-astra`.
 
