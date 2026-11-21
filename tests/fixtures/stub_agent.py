@@ -279,6 +279,15 @@ def _acp(msg, pending):
             else:
                 outcome = reply["result"]["outcome"]
                 answer = f"permission {outcome.get('optionId') or outcome.get('outcome')}"
+        hold = re.search(r"WAIT_FOR:(\S+)", text)
+        if hold:  # a turn the test ends on cue (no clock involved): wait for the file, or a cancel
+            _acp.cancelled = False
+            deadline = time.time() + 60
+            while not os.path.exists(hold.group(1)) and time.time() < deadline:
+                if _acp.cancelled:
+                    emit({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "cancelled"}})
+                    return
+                time.sleep(0.02)
         if "SLOW" in text:
             _acp.cancelled = False
             for _ in range(500):

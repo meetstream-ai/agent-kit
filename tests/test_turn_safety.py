@@ -128,15 +128,34 @@ def test_a_new_turn_stops_the_hung_one_instead_of_queueing(
 
 
 def test_the_warm_up_turn_is_waited_out_not_stopped(tmp_path: Path) -> None:
+    """A turn arriving during the warm-up waits for it; the warm-up is never cancelled.
+
+    Driven by cues, not sleeps: the warm-up ends only when the test creates ``release``,
+    after it has seen the second turn waiting (slow CI runners stretch real sleeps).
+    """
     session = make_session(tmp_path, "hermes")
     session.start()
+    release = tmp_path / "release"
     warmup: list[dict[str, Any]] = []
-    thread = threading.Thread(target=lambda: warmup.extend(session.run_turn("warm up, SLOW", warmup=True)))
-    thread.start()
-    time.sleep(0.3)
-    assert run(session, "hello")[-1]["type"] == "done"
-    thread.join(10)
+    first = threading.Thread(
+        target=lambda: warmup.extend(session.run_turn(f"warm up WAIT_FOR:{release}", warmup=True))
+    )
+    first.start()
+    deadline = time.monotonic() + 30
+    while not session.turn_running:  # the warm-up holds the turn
+        assert time.monotonic() < deadline, "the warm-up never started"
+        time.sleep(0.01)
+    second: list[dict[str, Any]] = []
+    waiting = threading.Thread(target=lambda: second.extend(run(session, "hello")))
+    waiting.start()
+    time.sleep(0.5)  # longer than the 0.2 s after which a normal turn would be stopped
+    assert not second  # still waiting behind the warm-up
+    assert not session.cancelled  # and the warm-up was not stopped
+    release.touch()
+    first.join(30)
+    waiting.join(30)
     assert warmup[-1]["type"] == "done"  # not cancelled
+    assert second[-1]["type"] == "done"
     session.close()
 
 
