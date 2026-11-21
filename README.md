@@ -32,6 +32,7 @@ MeetStream never sees your agent's login and charges no model tokens.
 - [How it works](#how-it-works)
 - [Before you start](#before-you-start)
 - [Quick start](#quick-start)
+- [Set it up with the API](#set-it-up-with-the-api)
 - [Install](#install)
 - [Supported agents](#supported-agents)
 - [Access levels](#access-levels)
@@ -40,6 +41,7 @@ MeetStream never sees your agent's login and charges no model tokens.
 - [Troubleshooting](#troubleshooting)
 - [Commands](#commands)
 - [Development](#development)
+- [Docs](#docs)
 
 ## How it works
 
@@ -59,26 +61,43 @@ flowchart LR
 3. **When someone interrupts**, the bridge stops your agent at once and keeps the
    conversation, so the next question still has the context.
 
-Your agent can also use the meeting itself through MCP tools: post in the chat,
-share its screen, and more, whatever your MIA agent allows.
+Your agent can also use the meeting itself through MIA's meeting tools: post in
+the chat, share a web page, read and click it, and look at the screen, whatever
+your MIA agent allows. The screen tools need `agent.tools: ["screen"]` on the MIA
+agent and work in Google Meet. OpenClaw, Antigravity and custom commands are
+text only.
 
 ## Before you start
 
-The Agent Kit is the third way to give MIA a brain, and not the one to start with:
+MeetStream has two ways to integrate. Most projects need the first one:
 
-1. **MeetStream keys** (simplest): MIA uses MeetStream's model providers and MeetStream bills them per hour.
-2. **Your own provider keys**: save your speech-to-text, model and voice keys in the MeetStream dashboard.
-3. **Your own agent on your computer**: this kit.
+1. **Bot API: meeting bots and recording.** Send a bot to Zoom, Google Meet or Microsoft Teams, then get
+   recordings, transcripts, participants, chat and webhooks after the call, or live data during it.
+   You do not need this kit for that. Start at the [docs](https://docs.meetstream.ai/guides/get-started/create-your-first-bot).
+2. **Agents API: a voice agent in the meeting** (API name MIA). MIA has three setups, in this order:
+
+| Setup | What you do | Price per meeting hour |
+|---|---|---|
+| a. MeetStream's inbuilt keys (default) | Pick the modules (speech-to-text, LLM, voice, or just the LLM) and the models. No provider account. Inbuilt keys cover OpenAI and Deepgram today. | Bot price + $0.25 agent infrastructure + the per-hour price of the models you pick. The dashboard agent editor shows the rate before the bot runs. |
+| b. Your own provider keys | Save your keys (OpenAI, Anthropic, Deepgram, ElevenLabs and others) in the dashboard and pick any supported model. | Bot price + $0.25 agent infrastructure. Your provider bills you for model usage. |
+| c. **Your own agent: this kit** | Your agent CLI on your computer, on your own subscription, writes what MIA says. | Bot price + $0.25 agent infrastructure. MeetStream charges no model tokens for your agent's replies. |
+
+The bot price is $0.35 per recording hour ($0.25 at volume), see [pricing](https://meetstream.ai/pricing).
+Inbuilt keys are not on for every account yet. If the API answers *"MeetStream-managed keys are not
+available for … Use your own key."*, use your own provider keys. MIA's speech-to-text and voice still
+need a provider in setup c too: your own keys, or inbuilt keys where your account has them. Details:
+[Voice agent pricing and keys](https://docs.meetstream.ai/guides/mia/pricing-and-keys).
 
 Pick the Agent Kit only when you want your own agent CLI to answer. Know this first:
 
 > [!WARNING]
-> - **What people say in the meeting reaches an agent that can access your computer.** The work folder,
->   your agent's tools and, at higher [access levels](#access-levels), edits and shell commands. Keep the
->   default **Read-only** level unless you trust everyone in the call, and turn on the
->   [activation code](#activation-code).
-> - **Your computer must stay on for the whole call**, with the bridge and the tunnel running. If it sleeps
->   or loses its connection, MIA cannot reach your agent.
+> - **What people say in the meeting reaches an agent that can access your computer and terminal.** Speech and
+>   chat can carry instructions (prompt injection). The work folder, your agent's tools and, at higher
+>   [access levels](#access-levels), edits and shell commands are in reach. Keep the lowest level that does the
+>   job (the default **Read-only**) unless you trust everyone in the call, and keep the
+>   [activation code](#activation-code) on.
+> - **Your computer, your agent and the bridge must stay on for the whole call**, with the tunnel running. If
+>   the computer sleeps or loses its connection, MIA cannot reach your agent.
 
 ## Quick start
 
@@ -120,6 +139,8 @@ Next time, run `meetstream-agent-kit` and press Enter to start with the same ans
 
 **3. Point your MIA agent at it.** Open the agent in the dashboard, go to
 **Model**, choose **Your agent** as the provider, and paste the Bridge URL.
+Set the access level, the label and the activation code, save the agent, then
+click **Test connection** (it uses the saved settings).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/meetstream-ai/agent-kit/main/docs/images/dashboard-your-agent-dark.png">
@@ -134,6 +155,53 @@ joins now talks to your agent. Not sure everything is ready? Run
 > Prefer to run the pieces yourself? `meetstream-agent-kit pair`, then
 > `meetstream-agent-kit serve --agent claude --tunnel cloudflare` (or `--tunnel ngrok`,
 > or no `--tunnel` and your own `cloudflared tunnel --url http://127.0.0.1:8787`).
+
+## Set it up with the API
+
+The dashboard steps above map to the MeetStream API. Save the pairing token in
+the dashboard first (**Integrations > Models > Local agent**): it is never part
+of the agent config. Then create a MIA agent in pipeline mode with
+`model.provider: "local_agent"`:
+
+```bash
+curl -X POST https://api.meetstream.ai/api/v1/mia \
+  -H "Authorization: Token $MEETSTREAM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_name": "Claude in the meeting",
+    "mode": "pipeline",
+    "model": {
+      "provider": "local_agent",
+      "local_agent": {
+        "url": "https://<your-tunnel-host>",
+        "label": "Claude Code",
+        "access": "readonly",
+        "require_code": true
+      }
+    },
+    "transcriber": { "provider": "deepgram", "model": "nova-3", "language": "en" },
+    "voice": { "provider": "elevenlabs", "voice_id": "<YOUR_VOICE_ID>" },
+    "agent": { "response_modality": "audio" }
+  }'
+```
+
+- `model.local_agent.url` (your tunnel, `https://`) is required. `label`, `access`
+  (`readonly` default, `confirm`, `full`), `require_code` (default `true`),
+  `owner_only`, `owner_names`, `owner_ids` and `timeout_s` (default 120) are optional.
+- `transcriber` and `voice` are required: MIA still listens and speaks.
+  `model.model` and `system_prompt` are optional.
+
+**Test connection** is one call. `status` is `ok` when the bridge answered and
+your agent is signed in; otherwise it names the problem (`login_expired`,
+`not_installed`, `no_token`, `token_rejected`, `unreachable`, `bad_url`).
+
+```bash
+curl "https://api.meetstream.ai/api/v1/mia?agent_config_id=<AGENT_CONFIG_ID>&check=local_agent" \
+  -H "Authorization: Token $MEETSTREAM_API_KEY"
+```
+
+Then send a bot with `agent_config_id` to `POST /api/v1/bots/create_bot`. All
+fields: [MIA Screen Sharing and Custom Agents](https://docs.meetstream.ai/guides/features/mia-screen-sharing-and-custom-agents).
 
 ## Install
 
@@ -212,7 +280,10 @@ Paste it in the meeting chat, and from then on only you can talk to your agent.
 
 - MeetStream never sees the code before it is pasted, so nobody can claim your agent for you.
 - A new code appears after 5 minutes or 3 wrong tries; 12 wrong codes lock the meeting.
-- When you leave the call, your agent locks again.
+- When you leave the call, your agent locks again, and the bridge shows a new code.
+- The code works in Google Meet. In Zoom and Teams, set `require_code: false` and
+  list `owner_names` instead. Display names can be copied by guests, so keep
+  that setup at **Read-only**.
 
 ## Security
 
@@ -289,6 +360,18 @@ uv run python scripts/build_pyz.py   # the single-file build
 Releases are cut from a `v*` tag: CI tests, builds, attests and publishes to
 PyPI with trusted publishing (no stored token), then attaches the files to the
 GitHub release.
+
+## Docs
+
+- [MIA Screen Sharing and Custom Agents](https://docs.meetstream.ai/guides/features/mia-screen-sharing-and-custom-agents): the full `local_agent` guide (setup c)
+- [Voice agent pricing and keys](https://docs.meetstream.ai/guides/mia/pricing-and-keys): $0.25 per hour agent infrastructure, inbuilt keys, your own keys
+- [Two ways to integrate](https://docs.meetstream.ai/guides/introduction/integration-paths): the Bot API and the Agents API
+- [What is MIA](https://docs.meetstream.ai/guides/mia/what-is-mia) and the [MIA API guide](https://docs.meetstream.ai/guides/mia/mia-api-guide)
+
+For the latest details, fetch a page with `.md` appended, read
+https://docs.meetstream.ai/llms.txt, or connect the docs MCP server at
+https://docs.meetstream.ai/_mcp/server. Where this README and the docs differ,
+the docs are correct.
 
 ## License
 
