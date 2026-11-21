@@ -44,6 +44,12 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr("meetstream_agent_kit.shared_estimates._fetch", offline)
     monkeypatch.setenv("MIA_BRIDGE_HOME", str(tmp_path / "legacy"))
     monkeypatch.setattr("meetstream_agent_kit.console.shutil.which", lambda name: None)
+    # Plan detection reads ~/.claude.json and ~/.codex/auth.json: give every test an empty home.
+    monkeypatch.setenv("HOME", str(tmp_path / "user"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    from meetstream_agent_kit import pricing
+
+    pricing.load.cache_clear()
     for name in (
         "STUB_AUTH_FAIL",
         "STUB_FIRST_S",

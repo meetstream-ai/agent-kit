@@ -95,7 +95,9 @@ def test_picker_labels_shared_estimates_and_your_own_runs_win(
     detail = estimates.detail_text(AGENTS["agy"], ModelChoice("gemini-3.8-flash-low"), low)
     assert "measured by MeetStream 2026-11-18" in detail
     row = estimates.row_text(AGENTS["agy"], ModelChoice("gemini-3.8-flash-low"), low, 500_000)
-    assert row.rstrip().endswith("MS 11-18")
+    assert "MS 11-18" not in row  # the date is in the detail line; the row keeps room for the price
+    assert "≈$" in row
+    assert row.rstrip().endswith("cold")
     assert row.startswith("gemini-3.8-flash-low")
     unknown = estimates.detail_text(AGENTS["agy"], ModelChoice("brand-new"), found.get("brand-new"))
     assert unknown.startswith("not measured yet")

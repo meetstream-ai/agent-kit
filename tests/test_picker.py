@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from meetstream_agent_kit import estimates, ui
+from meetstream_agent_kit import estimates, pricing, ui
 from meetstream_agent_kit.agents import AGENTS, custom_agent
 from meetstream_agent_kit.cli import _test_turn
 from meetstream_agent_kit.compare import Measured, measure
@@ -209,9 +209,18 @@ def test_rows_and_details_show_real_usage_and_first_words(
     assert "██████████" in row
     assert "223k/h" in row
     assert "~5 s cold" in row
-    assert ("$" in row) is (cost is not None)
-    assert ("plan usage, no per-token bill" in detail) is (cost is None)
-    assert ("$" in detail) is (cost is not None)
+    if cost is None:  # no price from the CLI: the dated table's Anthropic price for "sonnet"
+        assert "223k/h ≈$0.45" in row
+        assert "≈ $0.45/h at API rates (estimate; Anthropic list prices, 2026-11-21)" in detail
+    else:  # the CLI's own price wins
+        assert f"≈{pricing.money(project_hour(estimate.usage).cost_usd or 0)}" in row
+        assert "Claude Code's own estimate" in detail
+    no_cli_price = dataclasses.replace(estimate, usage=Usage(9800, output=20))
+    unpriced = row_text(
+        agent, ModelChoice("some-new-model"), no_cli_price, project_hour(no_cli_price.usage).total
+    )
+    assert "223k/h —" in unpriced
+    assert "API price unknown" in detail_text(agent, ModelChoice("some-new-model"), no_cli_price)
     assert "first words ~5 s (cold)" in detail
     assert "vision (from docs), local actions per access level" in detail
     empty = row_text(AGENTS["openclaw"], ModelChoice("unknown"), None, 0)

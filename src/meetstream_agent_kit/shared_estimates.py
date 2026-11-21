@@ -23,7 +23,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Final
 
-from meetstream_agent_kit import __version__
+from meetstream_agent_kit import __version__, pricing
 from meetstream_agent_kit.pairing import default_home
 from meetstream_agent_kit.usage import Assumptions, Usage, project_hour
 
@@ -68,9 +68,9 @@ def entry(
     }
 
 
-def document(entries: Sequence[dict[str, Any]]) -> dict[str, Any]:
+def document(entries: Sequence[dict[str, Any]], prices: dict[str, Any] | None = None) -> dict[str, Any]:
     a = Assumptions()
-    return {
+    doc = {
         "schema": SCHEMA,
         "kit_version": __version__,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -82,17 +82,25 @@ def document(entries: Sequence[dict[str, Any]]) -> dict[str, Any]:
         },
         "estimates": list(entries),
     }
+    block = prices if prices is not None else bundled_document().get("prices")
+    if isinstance(block, dict):
+        doc["prices"] = block  # the dated API price table (see pricing.py); the refresh edits it here
+    return doc
 
 
 def export(path: Path, entries: Sequence[dict[str, Any]]) -> int:
     """Write or merge ``path``: new measurements replace the same agent + model. Returns the count."""
     merged: dict[tuple[str, str], dict[str, Any]] = {}
-    for item in valid_entries(_read_json(path)):
+    existing = _read_json(path)
+    prices = existing.get("prices") if isinstance(existing, dict) and pricing.table(existing) else None
+    for item in valid_entries(existing):
         merged[(item["agent"], item["model"])] = item
     for item in entries:
         merged[(item["agent"], item["model"])] = item
     path.write_text(
-        json.dumps(document(sorted(merged.values(), key=lambda e: (e["agent"], e["model"]))), indent=2)
+        json.dumps(
+            document(sorted(merged.values(), key=lambda e: (e["agent"], e["model"])), prices), indent=2
+        )
         + "\n",
         encoding="utf-8",
     )
@@ -137,7 +145,7 @@ def valid_entries(data: Any) -> list[dict[str, Any]]:
     return found
 
 
-def bundled() -> list[dict[str, Any]]:
+def bundled_document() -> dict[str, Any]:
     try:
         text = (
             resources.files("meetstream_agent_kit")
@@ -145,9 +153,19 @@ def bundled() -> list[dict[str, Any]]:
             .joinpath(CACHE_FILE)
             .read_text(encoding="utf-8")
         )
-        return valid_entries(json.loads(text))
+        data = json.loads(text)
     except (OSError, ValueError, ModuleNotFoundError):
-        return []
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def bundled() -> list[dict[str, Any]]:
+    return valid_entries(bundled_document())
+
+
+def cached_document(home: Path | None = None) -> Any:
+    """The last shared file fetched (any age), or None."""
+    return _read_json((home or default_home()) / CACHE_FILE)
 
 
 def load(
