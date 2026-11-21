@@ -276,7 +276,7 @@ def test_plain_setup_measures_before_picking_and_refreshes_cache(
     )
     out = capsys.readouterr().out
     assert "Choose (numbers, comma-separated) [3,4,5,6]: " in prompts
-    assert measured == [("m2", ""), ("m3", ""), ("m4", ""), ("", "")]
+    assert sorted(measured) == sorted([("m2", ""), ("m3", ""), ("m4", ""), ("", "")])  # 4 at once
     assert out.count("Which model?") == 2
     first, second = out.split("Which model?")[1:]
     assert "██████████" in first

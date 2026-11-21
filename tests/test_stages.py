@@ -203,6 +203,8 @@ def test_compare_stages_each_model(
     results = compare(make_config(tmp_path), ["haiku", "sonnet"], "")
     assert all(result.usage for result in results)
     out = capsys.readouterr().out
-    assert "Woke haiku" in out
-    assert "Woke sonnet" in out
-    assert out.count("First words") == out.count("Answered") == 2
+    assert "Measuring 2 model(s), 2 at a time." in out
+    assert out.count("✓ ") == 2
+    assert "✓ haiku" in out
+    assert "✓ sonnet" in out
+    assert "≈ $" in out  # the stub reports usage; Claude Code's aliases have list prices

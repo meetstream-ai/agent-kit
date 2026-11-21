@@ -29,7 +29,7 @@ from typing import Final
 from meetstream_agent_kit import __version__, checks, context, estimates, shared_estimates, ui, warm_check
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
-from meetstream_agent_kit.compare import Measured, chart_lines, compare
+from meetstream_agent_kit.compare import DEFAULT_PARALLEL, Measured, chart_lines, compare
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import DEFAULT_PORT, DEFAULT_TURN_TIMEOUT_S
@@ -592,10 +592,10 @@ def cmd_bench_compare(args: argparse.Namespace) -> int:
         models = models[: args.max_models] or [""]
     names = ", ".join(m or "default" for m in models)
     say(f"Comparing {len(models)} model(s) of {config.agent.label}: {names}")
-    results = compare(config, models, config.effort)
+    results = compare(config, models, config.effort, parallel=args.parallel)
     assumptions = Assumptions(turns_per_hour=args.turns_per_hour)
     say("")
-    for line in chart_lines(results, assumptions, selected=config.model):
+    for line in chart_lines(results, assumptions, selected=config.model, agent=config.agent):
         say(line)
     if args.export:
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -800,6 +800,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="with --compare: write or merge MeetStream's shared model-estimates.json (nothing is uploaded)",
     )
     bench.add_argument("--models", help="with --compare: comma-separated model ids (default: the CLI's list)")
+    bench.add_argument(
+        "--parallel",
+        type=int,
+        default=DEFAULT_PARALLEL,
+        help=f"with --compare: models measured at once (default {DEFAULT_PARALLEL})",
+    )
     bench.add_argument(
         "--max-models", type=int, default=4, help="with --compare: at most this many (default 4)"
     )

@@ -7,6 +7,7 @@ import json
 import math
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,10 +104,20 @@ def load_with_shared(agent: str, shared: list[dict[str, Any]] | None = None) -> 
     return found
 
 
+_SAVING = threading.Lock()
+"""Measurements finish on several threads at once; each save reads, merges and replaces the file."""
+
+
 def save(agent: str, model: str, measured: Measured) -> None:
     """Atomically keep a successful measurement, with owner-only permissions."""
     if measured.usage is None or measured.error:
         return
+    with _SAVING:
+        _save(agent, model, measured)
+
+
+def _save(agent: str, model: str, measured: Measured) -> None:
+    assert measured.usage is not None  # noqa: S101 - checked by save()
     temporary: Path | None = None
     try:
         path = default_home() / "model-usage.json"
@@ -131,17 +142,17 @@ def save(agent: str, model: str, measured: Measured) -> None:
                 temporary.unlink(missing_ok=True)
 
 
-def hour_cost(agent: AgentSpec, model: str, estimate: Estimate | None) -> tuple[float | None, str]:
+def hour_cost(agent: AgentSpec, model: str, turn: Usage | None) -> tuple[float | None, str]:
     """An hour at API rates and where the number comes from; (None, "") when no price is known."""
-    if estimate is None:
+    if turn is None:
         return None, ""
-    hour = project_hour(estimate.usage)
+    hour = project_hour(turn)
     if hour.cost_usd is not None:
         return hour.cost_usd, f"{agent.label}'s own estimate"
     price = pricing.price_for(model, pricing.load())
     if price is None:
         return None, ""
-    return pricing.hour_cost(hour, estimate.usage, price), f"{price.vendor} list prices, {price.as_of}"
+    return pricing.hour_cost(hour, turn, price), f"{price.vendor} list prices, {price.as_of}"
 
 
 _TAG_STYLE = {pricing.PLAN: "magenta", pricing.FREE: "green", pricing.API: "yellow"}
@@ -157,7 +168,7 @@ def row_text(
         f"{human_tokens(hour.total)}/h" if hour else ("not measured" if agent.reports_usage else "usage n/a")
     )
     kind = pricing.plan_kind(agent.name, model.id)
-    cost, _ = hour_cost(agent, model.id, estimate)
+    cost, _ = hour_cost(agent, model.id, estimate.usage if estimate else None)
     if kind == pricing.FREE:
         usage += " " + ui.paint("free", "green")
     else:
@@ -189,7 +200,7 @@ def _billing_text(agent: AgentSpec, model: str, estimate: Estimate | None) -> li
     kind = pricing.plan_kind(agent.name, model)
     if kind == pricing.FREE:
         return ["free model"]
-    cost, source = hour_cost(agent, model, estimate)
+    cost, source = hour_cost(agent, model, estimate.usage if estimate else None)
     parts = []
     if cost is not None:
         parts.append(f"≈ {pricing.money(cost)}/h at API rates (estimate; {source})")

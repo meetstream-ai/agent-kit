@@ -33,6 +33,26 @@ All notable changes to this package. The format follows
 - Esc and ← in a typed question went into the answer as escape characters.
   They now go back a step.
 
+### Added
+
+- Model picker rows show what an hour would cost at the vendor's API rates
+  ("≈$0.17", or "—" when no price is known) and a "plan" tag when the CLI is
+  signed in on a subscription or free plan ("free" for `:free` models). The
+  detail line names the source: the CLI's own estimate, or the vendor's
+  published per-token list price with its date. The dated price table
+  (Anthropic, Google, OpenAI; input, output, cached) lives in the shared
+  estimates file under `prices`, so the weekly refresh can update it. Plan
+  detection reads only local sign-in files and never a secret.
+- "Measure live" and `bench --compare` measure models in parallel: a work
+  queue of 4 workers (`--parallel N`), each model in its own process and empty
+  folder, with per-model timeouts. A free worker takes the next model at once.
+  Transient failures (timeout, crash, rate limit, network) are retried once
+  after a short pause; sign-in and unknown-model errors are not. At a terminal
+  a live table shows each model (queued, its stage, retrying (1/1), ✓ or ✗
+  with the reason, seconds, tokens/h and cost) and a progress line with the
+  time left. Esc stops the rest and keeps the results so far. Picking more
+  than 6 models asks first, since each is a real turn on your plan.
+
 ### Changed
 
 - Setup's terminal screens run on prompt_toolkit and rich, the package's first

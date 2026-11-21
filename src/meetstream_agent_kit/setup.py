@@ -50,6 +50,9 @@ SETUP_STEPS: Final = 7
 MODEL_MENU_SIZE: Final = 12
 """Models shown in the menu; the rest are reached with "Type another model id"."""
 COMPARE_MAX: Final = 4
+"""Models ticked by default for "Measure live"."""
+COMPARE_WARN: Final = 6
+"""More than this many picked: warn and ask, since each is a real turn."""
 
 PROJECT_RULE_FILES: Final = (
     "AGENTS.md",
@@ -567,6 +570,10 @@ def _pick_model(
                 ticked,
                 [m.label for m in measurable],
             )
+            if len(picked) > COMPARE_WARN:
+                ui.warn(f"{len(picked)} models: each one is a real turn on your plan or API credits.")
+                if not prompt.confirm(f"Measure all {len(picked)}?", False):
+                    continue
             results = compare(
                 compare_config(),
                 [measurable[i].id for i in picked],
@@ -574,7 +581,7 @@ def _pick_model(
                 run=lambda c, m, e: measure_model(c, m, e if e in listed.efforts_for(m) else ""),
             )
             say("")
-            for line in chart_lines(results):
+            for line in chart_lines(results, agent=agent):
                 say(line)
             say("")
             continue
