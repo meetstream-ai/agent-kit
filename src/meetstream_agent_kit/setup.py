@@ -29,7 +29,7 @@ from meetstream_agent_kit.compare import Measured, chart_lines, compare, measure
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.login import LoginChecker
-from meetstream_agent_kit.models import ModelCatalog, ModelChoice, catalog_for, features
+from meetstream_agent_kit.models import ModelCatalog, ModelChoice, catalog_for, features, unique
 from meetstream_agent_kit.tunnel import (
     NGROK_AUTHTOKEN_URL,
     NGROK_DOMAINS_URL,
@@ -415,7 +415,7 @@ def _check_login(prompt: Prompter, agent: AgentSpec, binary: str, run: Callable[
 
 def _menu_models(catalog: ModelCatalog, keep: str) -> list[ModelChoice]:
     """At most MODEL_MENU_SIZE models, with the default and ``keep`` always in."""
-    models = list(catalog.models)
+    models = unique(list(catalog.models))  # never two rows for one model
     must = [m for m in models if m.id in (catalog.default_model, keep)]
     rest = [m for m in models if m not in must]
     return (must + rest)[:MODEL_MENU_SIZE] if len(models) > MODEL_MENU_SIZE else models
@@ -451,6 +451,8 @@ def _pick_model(
         ui.ok(f"{len(listed.models)} model{'s' if len(listed.models) != 1 else ''} from {listed.source}")
     else:
         ui.warn(f"{agent.label} did not list its models" + (f" ({listed.error})" if listed.error else ""))
+    if listed.note:
+        ui.note(listed.note)
     last_model = last.model if last and last.agent == agent.name else ""
     last_effort = last.effort if last and last.agent == agent.name else ""
     while True:

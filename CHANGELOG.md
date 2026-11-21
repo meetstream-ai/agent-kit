@@ -4,6 +4,18 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.6] - Unreleased
+
+### Fixed
+
+- Copilot's model step showed "auto, auto": `copilot --acp --stdio` lists
+  `auto` twice and nothing else on many accounts. Model lists are now
+  de-duplicated for every agent (the picker never shows a row twice), and when
+  Copilot offers only Auto the step says how to enable other models. Checked
+  with Copilot CLI 1.0.114: over ACP such an account accepts only `auto`
+  (`--model` is ignored and `session/set_model` rejects other models), so no
+  longer list is offered.
+
 ## [0.3.5] - Unreleased
 
 ### Added

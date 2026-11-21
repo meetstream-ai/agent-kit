@@ -55,6 +55,8 @@ class ModelCatalog:
     error: str = ""
     vision: bool | None = None
     vision_source: str = ""
+    note: str = ""
+    """Something the user should know about this list, shown under it."""
 
     def efforts_for(self, model: str) -> list[str]:
         chosen = next((m for m in self.models if m.id == model), None)
@@ -237,11 +239,15 @@ def acp_catalog_from(
     image = _as_dict(capabilities.get("promptCapabilities")).get("image")
     vision = image if isinstance(image, bool) else None
     vision_source = source if vision is not None else ""
-    models = [
-        ModelChoice(str(m["modelId"]), str(m.get("name") or ""), vision=vision, vision_source=vision_source)
-        for m in raw.get("availableModels") or []
-        if isinstance(m, dict) and m.get("modelId")
-    ]
+    models = unique(
+        [
+            ModelChoice(
+                str(m["modelId"]), str(m.get("name") or ""), vision=vision, vision_source=vision_source
+            )
+            for m in raw.get("availableModels") or []
+            if isinstance(m, dict) and m.get("modelId")
+        ]
+    )
     efforts: list[str] = []
     current_effort = ""
     for option in created.get("configOptions") or []:
@@ -331,6 +337,17 @@ def claude_catalog_from(help_text: str) -> ModelCatalog:
     return ModelCatalog(models, "", _help_list(help_text, "--effort"), "", "from claude --help")
 
 
+def unique(models: list[ModelChoice]) -> list[ModelChoice]:
+    """One row per model id, the first one kept (Copilot lists "auto" twice)."""
+    seen: set[str] = set()
+    out = []
+    for model in models:
+        if model.id not in seen:
+            seen.add(model.id)
+            out.append(model)
+    return out
+
+
 def catalog_for(
     agent: AgentSpec,
     binary: str,
@@ -353,6 +370,14 @@ def catalog_for(
             catalog = claude_catalog_from(f"{proc.stdout}\n{proc.stderr}")
     except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError) as exc:
         catalog.error = str(exc)[:200]
+    if agent.name == "copilot" and [m.id for m in catalog.models] == ["auto"]:
+        # Checked 2026-11-21 (Copilot CLI 1.0.114): over ACP, which meetings use, such an account
+        # accepts only "auto" (--model is ignored, session/set_model rejects others), so no other
+        # list is offered here: picking one would fail in the meeting.
+        catalog.note = (
+            "Copilot offers only Auto to apps on this account. To use other models, enable them in "
+            "your Copilot settings (github.com/settings/copilot), then run setup again."
+        )
     if agent.name == "agy" and not catalog.models:
         try:
             proc = run([binary, "models"], capture_output=True, text=True, timeout=timeout_s, check=False)
