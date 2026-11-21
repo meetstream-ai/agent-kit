@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from meetstream_agent_kit import checks, context, estimates, ui
+from meetstream_agent_kit import checks, context, estimates, tui, ui
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
 from meetstream_agent_kit.compare import Measured, chart_lines, compare, measure
@@ -220,6 +220,14 @@ class Prompter:
             if typed == "<" and self.back_allowed:
                 raise GoBack
             return typed or default
+        if tui.AVAILABLE:
+            got = tui.text(question, default, back=self.back_allowed)
+            if got is tui.BACK:
+                ui.answered(question, ui.BACK_LABEL)
+                raise GoBack
+            answer = str(got).strip() or default
+            ui.answered(question, answer or "(blank)")
+            return answer
         typed = self._line(ui.question_prompt(question, default, back=self.back_allowed))
         if typed == "<" and self.back_allowed:
             self._fold(len(question) + len(default) + 9)
@@ -237,6 +245,13 @@ class Prompter:
         sys.stdout.flush()
 
     def confirm(self, question: str, default: bool = True) -> bool:
+        if self.interactive and tui.AVAILABLE:
+            got = tui.confirm(question, default, back=self.back_allowed)
+            if got is tui.BACK:
+                ui.answered(question, ui.BACK_LABEL)
+                raise GoBack
+            ui.answered(question, "Yes" if got else "No")
+            return bool(got)
         while True:
             if self.interactive:
                 typed = self._line(ui.question_prompt(question, "Y/n" if default else "y/N")).lower()
@@ -254,6 +269,14 @@ class Prompter:
         self, question: str, options: Sequence[str], chosen: Sequence[int] = (), hints: Sequence[str] = ()
     ) -> list[int]:
         """Several options at once; without a terminal, numbers separated by commas."""
+        if self.interactive and tui.AVAILABLE:
+            got = tui.select_many(question.strip(), options, chosen, hints, back=self.back_allowed)
+            if got is tui.BACK:
+                ui.answered(question, ui.BACK_LABEL)
+                raise GoBack
+            picked: list[int] = [int(i) for i in got]  # type: ignore[attr-defined]
+            ui.answered(question, ", ".join(options[i] for i in picked) or "(none)")
+            return picked
         if self.interactive:
             return ui.multi_select(question.strip(), options, chosen, hints)
         say(question)
@@ -280,8 +303,17 @@ class Prompter:
     ) -> int:
         if self.back_allowed:  # a "← Back" row at the end; Esc or ← work too in a terminal
             hints = [*hints, *[""] * (len(options) - len(hints)), ""]
+            real = len(options)
             options = [*options, ui.BACK_LABEL]
-        if self.interactive:
+            if detail is not None:  # the Back row has its own detail line (it had none: IndexError)
+                inner = detail
+                detail = lambda i: inner(i) if i < real else "Go back to the previous step."  # noqa: E731
+        if self.interactive and tui.AVAILABLE:
+            got = tui.select(question.strip(), options, default, hints, detail=detail, back=self.back_allowed)
+            index = -1 if got is tui.BACK else int(got)  # type: ignore[call-overload]
+            shown = options[index] if index >= 0 else ui.BACK_LABEL
+            ui.answered(question.strip(), ui.plain(shown).split("  ")[0].strip() if detail else shown)
+        elif self.interactive:
             index = ui.arrow_select(
                 question.strip(), options, default, hints, detail=detail, back=self.back_allowed
             )

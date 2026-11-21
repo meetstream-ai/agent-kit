@@ -246,8 +246,13 @@ shasum -a 256 --check --ignore-missing SHA256SUMS
 python3 meetstream-agent-kit.pyz --help
 ```
 
-The bridge uses the Python standard library only. There are no dependencies to
-audit, and nothing else is installed.
+The `.pyz` uses the Python standard library only: there are no dependencies to
+audit, and nothing else is installed. Its setup uses the built-in menus. The
+PyPI package adds two well-known libraries for setup's terminal screens:
+[prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit)
+(menus and text prompts that redraw cleanly and go back with Esc) and
+[rich](https://github.com/Textualize/rich) (step headers, boxes and spinners).
+The bridge itself does not use them.
 
 ## Supported agents
 

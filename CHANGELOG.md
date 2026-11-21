@@ -27,6 +27,20 @@ All notable changes to this package. The format follows
 - When the only model on offer is the default (Copilot's Auto), setup says
   "GitHub Copilot CLI picks the model itself (Auto)" instead of a menu with two
   near-identical rows.
+- Setup crashed with `IndexError` in step 2 when Back was available: the model
+  menu's detail line had no text for the "← Back" row. Every menu now has
+  one, and a test walks every step, pressing Back once in each.
+- Esc and ← in a typed question went into the answer as escape characters.
+  They now go back a step.
+
+### Changed
+
+- Setup's terminal screens run on prompt_toolkit and rich, the package's first
+  two dependencies. Menus and text prompts redraw in place (also after a
+  resize), show key hints (↑↓ move · Enter pick · Esc back) and fold into one
+  answered line. Step headers are rules, and summaries are boxes. Without a
+  terminal the numbered questions are unchanged. The single-file `.pyz` still
+  has no dependencies and uses the built-in menus.
 
 ## [0.3.5] - Unreleased
 

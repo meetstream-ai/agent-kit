@@ -22,7 +22,7 @@ import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
-from typing import Final
+from typing import Any, Final
 
 _CODES: Final[dict[str, str]] = {
     "bold": "1",
@@ -127,7 +127,27 @@ def header(title: str, version: str, tagline: str) -> None:
     _write(paint(bottom, "dim"))
 
 
+def _rich() -> Any:
+    """A rich Console for a colour terminal, else None (plain lines; also the dependency-free .pyz)."""
+    if not (is_interactive() and use_color()):
+        return None
+    try:
+        from rich.console import Console
+    except ImportError:  # pragma: no cover - the .pyz has no dependencies
+        return None
+    return Console(highlight=False, soft_wrap=False)
+
+
 def step(number: int, total: int, title: str) -> None:
+    console = _rich()
+    if console is not None:
+        from rich.rule import Rule
+
+        console.print()
+        console.print(
+            Rule(f"[bold #22d3ee]{number}/{total}[/]  [bold]{title}[/]", align="left", style="grey37")
+        )
+        return
     label = f" {number}/{total}  {title} "
     rule = "─" * max(4, min(width(), 72) - len(label) - 2)
     _write("")
@@ -135,6 +155,20 @@ def step(number: int, total: int, title: str) -> None:
 
 
 def box(title: str, rows: Sequence[tuple[str, str]]) -> None:
+    console = _rich()
+    if console is not None:
+        from rich.panel import Panel
+        from rich.table import Table
+
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="grey62", no_wrap=True)
+        grid.add_column(overflow="fold")
+        for key, value in rows:
+            grid.add_row(key, plain(value))
+        console.print(
+            Panel(grid, title=f"[bold]{title}[/]", title_align="left", border_style="grey37", expand=False)
+        )
+        return
     """A titled box of ``label  value`` rows (no secrets: values here are not meant to be copied)."""
     key_w = max((len(k) for k, _ in rows), default=0)
     lines = [f"{k.ljust(key_w)}  {v}" for k, v in rows]
@@ -155,6 +189,11 @@ def box(title: str, rows: Sequence[tuple[str, str]]) -> None:
 
 @contextlib.contextmanager
 def spinner(text: str) -> Iterator[None]:
+    console = _rich()
+    if console is not None:
+        with console.status(f"[#22d3ee]{text}[/]", spinner="dots"):
+            yield
+        return
     """Animate while a slow step runs; a plain ``text...`` line when not on a terminal."""
     if not is_interactive():
         _write(f"  {text}...")

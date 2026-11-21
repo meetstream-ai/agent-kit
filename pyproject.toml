@@ -29,7 +29,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 # Standard library only, on purpose: nothing to audit but this package.
-dependencies = []
+dependencies = [
+    "prompt-toolkit>=3.0.43",
+    "rich>=13.7",
+]
 
 [project.urls]
 Homepage = "https://meetstream.ai"

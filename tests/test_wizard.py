@@ -356,14 +356,23 @@ def test_plain_output_has_no_escape_codes(
 # ── Arrow-key menu on a real terminal ────────────────────────────────────────
 
 
-def _menu_in_a_terminal(keys: list[bytes], gap_s: float = 0.15, *, detail: bool = False) -> str:
-    """Run Prompter.choose in a pseudo-terminal, press ``keys``, return what the child printed."""
+def _menu_in_a_terminal(
+    keys: list[bytes], gap_s: float = 0.15, *, detail: bool = False, toolkit: bool = False
+) -> str:
+    """Run Prompter.choose in a pseudo-terminal, press ``keys``, return what the child printed.
+
+    ``toolkit`` False tests the built-in menu (the dependency-free .pyz fallback); True the
+    prompt_toolkit one that installed kits use."""
     import os
     import pty
     import select
     import time
 
     code = (
+        "import os\n"
+        "from meetstream_agent_kit import tui\n"
+        f"tui.AVAILABLE = {toolkit!r}\n"
+        "os.environ['PROMPT_TOOLKIT_NO_CPR'] = '1'\n"
         "from meetstream_agent_kit.setup import Prompter\n"
         "p = Prompter()\n"
         "assert p.interactive\n"
@@ -582,3 +591,15 @@ def test_openclaw_offers_its_own_first_run_setup(tmp_path: Path) -> None:
     machine = _Machine("curl", "bash")
     _setup(tmp_path, machine, "7", "", "")
     assert machine.ran[-1] == ["openclaw", "onboard", "--install-daemon"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pseudo-terminals are Unix only")
+def test_prompt_toolkit_menu_moves_shows_detail_and_key_hints() -> None:
+    out = _menu_in_a_terminal([b"\x1b[B", b"\r"], detail=True, toolkit=True)
+    assert "PICKED 1" in out
+    assert "details: 0" in out
+    # prompt_toolkit redraws only the characters that change, so "details: 1" is one digit here;
+    # tests/test_tui.py checks that the detail line follows the arrow.
+    assert "↑↓ move" in out
+    assert "Enter pick" in out
+    assert "beta" in out
