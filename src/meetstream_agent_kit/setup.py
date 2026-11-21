@@ -524,8 +524,10 @@ def _pick_model(
     last_model = last.model if last and last.agent == agent.name else ""
     last_effort = last.effort if last and last.agent == agent.name else ""
     only = listed.models[0] if len(listed.models) == 1 else None
-    if only is not None and only.id in (listed.default_model, "auto"):
+    if only is not None and only.id == "auto":
         # Nothing to choose (Copilot offers only Auto): say so instead of two near-identical rows.
+        # A CLI that lists only its default (Hermes without other models configured) still gets the
+        # menu: it takes other ids ("Type another model id").
         name = "Auto" if only.id == "auto" else only.id
         ui.ok(f"{agent.label} picks the model itself ({name})")
         efforts = listed.efforts_for(only.id)

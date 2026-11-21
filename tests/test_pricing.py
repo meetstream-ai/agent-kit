@@ -25,6 +25,8 @@ from meetstream_agent_kit.usage import HourEstimate, Usage
         ("gpt-6-astra", "gpt-6-astra"),
         ("gpt-oss-120b-medium", None),
         ("upstage/solar-mini4:free", None),
+        ("openai-codex:gpt-6.2-astra", "gpt-6-2-astra"),  # Hermes' provider:model
+        ("opencode-go:claude-sonnet-4.6:thinking", "claude-sonnet-4-6"),
         ("", None),  # the CLI's default
     ],
 )
