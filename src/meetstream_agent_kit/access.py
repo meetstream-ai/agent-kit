@@ -3,14 +3,19 @@
 The levels mean the same for every agent; each agent maps them to its own
 controls (see :mod:`meetstream_agent_kit.agents`):
 
-``readonly`` (default)
-    Read and search files in the work folder, plus the meeting tools.
-``confirm``
-    Every shell command or file change is asked y/N in the bridge terminal
-    (no answer within 20 s means no). Needs an agent that can ask first.
+``readonly`` (default, "Meeting only")
+    A meeting companion: the meeting tools, plus reading and searching files in
+    the work folder. Nothing on the computer changes.
+``confirm`` ("Ask first")
+    Anything on the computer, but every shell command or file change is asked
+    y/N in the bridge terminal (no answer within 20 s means no). Needs an agent
+    that can ask first.
 ``full``
-    No prompts. Only when MIA guarantees that only the owner, matched by a
-    verified id, can start turns.
+    Anything on the computer, no prompts. Only when MIA guarantees that only the
+    owner, matched by a verified id, can start turns.
+
+The agent's instructions say the same (see :data:`meetstream_agent_kit.prompts.ACCESS_SCOPE`),
+for the level the meeting actually runs at.
 
 The bridge's own maximum (``meetstream-agent-kit serve --max-access``) always wins: MIA's
 agent config can lower the level for a meeting, never raise it.

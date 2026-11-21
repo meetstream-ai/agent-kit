@@ -73,6 +73,9 @@ def answer_turn(text):
     if os.environ.get("STUB_AUTH_FAIL") == "1":
         emit({"type": "result", "is_error": True, "result": AUTH_ERROR})
         return
+    if os.environ.get("STUB_FAIL_TEXT"):  # e.g. a CLI out of credits
+        emit({"type": "result", "is_error": True, "result": os.environ["STUB_FAIL_TEXT"]})
+        return
     first = float(os.environ.get("STUB_FIRST_S", "0"))
     total = float(os.environ.get("STUB_TOTAL_S", "0"))
     answer = ANSWER
@@ -95,7 +98,18 @@ def answer_turn(text):
         if "LONGSTREAM" in text:
             time.sleep(0.03)
     time.sleep(max(0.0, total - first))
-    emit({"type": "result", "is_error": False, "result": answer})
+    result = {"type": "result", "is_error": False, "result": answer}
+    if os.environ.get("STUB_USAGE") == "1":  # Claude Code's real field names
+        model = arg_value("--model") or "default"
+        result["usage"] = {
+            "input_tokens": 10,
+            "cache_creation_input_tokens": 9000,
+            "cache_read_input_tokens": 0,
+            "output_tokens": 10 * len(model),
+            "output_tokens_details": {"thinking_tokens": 5},
+        }
+        result["total_cost_usd"] = 0.01 * len(model)
+    emit(result)
 
 
 def _rpc_loop(handle):
@@ -118,43 +132,153 @@ def _rpc_loop(handle):
     reader()
 
 
+def list_stdio_mcp_tools():
+    """Like agents that load MCP tools at session start (STUB_MCP_AT_START=1)."""
+    import subprocess
+
+    server = next(iter(_acp.mcp), None)
+    if not server:
+        return
+    env = dict(os.environ)
+    env.update({item["name"]: item["value"] for item in server.get("env") or []})
+    proc = subprocess.Popen(
+        [server["command"], *server.get("args", [])],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    for msg_id, method in ((1, "initialize"), (2, "tools/list")):
+        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": {}}) + "\n")
+        proc.stdin.flush()
+        proc.stdout.readline()
+    proc.stdin.close()
+    proc.wait(timeout=10)
+
+
+def call_stdio_mcp_tool(name):
+    """Like an ACP agent: start the stdio MCP server from session/new, then list and call a tool."""
+    import subprocess
+
+    server = next(iter(_acp.mcp), None)
+    if not server:
+        return "no MCP server configured"
+    env = dict(os.environ)
+    env.update({item["name"]: item["value"] for item in server.get("env") or []})
+    proc = subprocess.Popen(
+        [server["command"], *server.get("args", [])],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(method, params, msg_id):
+        proc.stdin.write(
+            json.dumps({"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}) + "\n"
+        )
+        proc.stdin.flush()
+        return json.loads(proc.stdout.readline())
+
+    try:
+        rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}}, 1)
+        listed = [t["name"] for t in rpc("tools/list", {}, 2)["result"]["tools"]]
+        if name not in listed:
+            return f"tool {name} not listed"
+        result = rpc("tools/call", {"name": name, "arguments": {"text": "hi"}}, 3)["result"]
+        return result["content"][0]["text"]
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=10)
+
+
 def _acp(msg, pending):
     """Minimal ACP agent: streams words; 'SLOW' waits for session/cancel;
-    'PERMISSION' asks for an execute permission and reports the outcome."""
+    'PERMISSION' asks for an execute permission and reports the outcome;
+    'TOOL:<name>' calls that meeting tool through the stdio MCP server from session/new;
+    'MODEL?' answers with the model set by session/set_model."""
     import queue
 
     method, mid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
     if method == "initialize":
         emit({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1, "agentCapabilities": {}}})
     elif method == "session/new":
+        if os.environ.get("STUB_AUTH_FAIL") == "1":
+            emit(
+                {"jsonrpc": "2.0", "id": mid, "error": {"code": -32000, "message": "Authentication required"}}
+            )
+            return
         _acp.mcp = params.get("mcpServers") or []
-        emit({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "sess_1"}})
+        if os.environ.get("STUB_MCP_AT_START") == "1":
+            list_stdio_mcp_tools()
+        created = {"sessionId": "sess_1"}
+        if os.environ.get("STUB_ACP_MODELS") == "1":  # the shape `agy acp` returns (2026-11-18)
+            created["models"] = {
+                "availableModels": [
+                    {"modelId": "flash-low", "name": "Flash (Low)"},
+                    {"modelId": "flash-high", "name": "Flash (High)"},
+                ],
+                "currentModelId": "flash-high",
+            }
+            created["configOptions"] = [
+                {
+                    "id": "thought_level",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": "high",
+                    "options": [{"value": v, "name": v.title()} for v in ("low", "medium", "high")],
+                }
+            ]
+        emit({"jsonrpc": "2.0", "id": mid, "result": created})
+    elif method == "session/set_config_option":
+        _acp.effort = params.get("value")
+        emit({"jsonrpc": "2.0", "id": mid, "result": {}})
+    elif method == "session/set_model":
+        _acp.model = params.get("modelId")
+        emit({"jsonrpc": "2.0", "id": mid, "result": {}})
     elif method == "session/cancel":
         _acp.cancelled = True
     elif method == "session/prompt":
         text = "".join(p.get("text", "") for p in params.get("prompt") or [])
         answer = ANSWER
+        tool = re.search(r"TOOL:([A-Za-z0-9_]+)", text) or re.search(
+            r"[Cc]all the ([A-Za-z0-9_]+) tool", text
+        )
+        if os.environ.get("STUB_NO_TOOLS") == "1":
+            tool = None
+        if tool:
+            answer = "Tool said: " + call_stdio_mcp_tool(tool.group(1))
+        if "MODEL?" in text:
+            answer = f"model {_acp.model}"
+        if "EFFORT?" in text:
+            answer = f"effort {_acp.effort}"
         if "PERMISSION" in text:
             ask_id = 9001
             box = queue.Queue()
             pending[ask_id] = box
-            emit(
-                {
-                    "jsonrpc": "2.0",
-                    "id": ask_id,
-                    "method": "session/request_permission",
-                    "params": {
-                        "sessionId": "sess_1",
-                        "toolCall": {"toolCallId": "t1", "kind": "execute", "title": "rm -rf /"},
-                        "options": [
-                            {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
-                            {"optionId": "no", "name": "Deny", "kind": "reject_once"},
-                        ],
-                    },
-                }
-            )
-            outcome = box.get(timeout=10)["result"]["outcome"]
-            answer = f"permission {outcome.get('optionId') or outcome.get('outcome')}"
+            options = [
+                {"optionId": "yes", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "no", "name": "Deny", "kind": "reject_once"},
+            ]
+            params = {
+                "sessionId": "sess_1",
+                "toolCall": {"toolCallId": "t1", "kind": "execute", "title": "rm -rf /"},
+                "options": options,
+            }
+            if "NAMED_PERMISSION" in text:  # options told apart only by their names
+                params["options"] = [
+                    {"optionId": "a1", "name": "Allow", "kind": "other"},
+                    {"optionId": "d1", "name": "Deny", "kind": "other"},
+                ]
+            if "BAD_PERMISSION" in text:  # malformed: the bridge must still answer
+                params = {"sessionId": "sess_1", "toolCall": "not an object", "options": ["?", 3]}
+            emit({"jsonrpc": "2.0", "id": ask_id, "method": "session/request_permission", "params": params})
+            reply = box.get(timeout=10)
+            if "error" in reply:
+                answer = "permission error"
+            else:
+                outcome = reply["result"]["outcome"]
+                answer = f"permission {outcome.get('optionId') or outcome.get('outcome')}"
         if "SLOW" in text:
             _acp.cancelled = False
             for _ in range(500):
@@ -181,6 +305,8 @@ def _acp(msg, pending):
 
 _acp.cancelled = False
 _acp.mcp = []
+_acp.model = None
+_acp.effort = None
 
 
 def _app_server(msg, pending):

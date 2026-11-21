@@ -15,6 +15,7 @@ from meetstream_agent_kit.access import AccessLevel
 from meetstream_agent_kit.agents import AgentSpec
 from meetstream_agent_kit.constants import MAX_ANSWER_CHARS, STOP_GRACE_S
 from meetstream_agent_kit.parsers import PARSERS
+from meetstream_agent_kit.usage import Usage, usage_from_lines
 
 
 @dataclass
@@ -26,6 +27,11 @@ class RunResult:
     first_output_ms: float | None = None
     total_ms: float = 0.0
     deltas: list[str] = field(default_factory=list)
+    usage: Usage | None = None
+    """Token usage the CLI reported for the run, when it prints one."""
+    stderr_tail: str = ""
+    """The last lines the CLI wrote to stderr, to explain an empty or failed turn."""
+    first_line_ms: float | None = None
 
 
 def build_oneshot_argv(
@@ -35,6 +41,7 @@ def build_oneshot_argv(
     binary: str | None = None,
     model: str = "",
     effort: str = "",
+    ignore_rules: bool = False,
 ) -> tuple[list[str], str | None]:
     """Return ``(argv, stdin_text)`` for one non-interactive run.
 
@@ -46,6 +53,10 @@ def build_oneshot_argv(
     argv += agent.full_args if access == "full" else agent.readonly_args
     argv += agent.model_args(model)
     argv += agent.effort_flags(effort)
+    if ignore_rules and agent.ignore_rules_args:
+        # After a subcommand (codex exec) the options go right behind it; otherwise at the end.
+        at = 2 if agent.oneshot_args and not agent.oneshot_args[0].startswith("-") else len(argv)
+        argv[at:at] = list(agent.ignore_rules_args)
     return argv, (None if via_arg else prompt)
 
 
@@ -93,6 +104,7 @@ def run_once(
     timeout_s: float,
     on_delta: Callable[[str], None] | None = None,
     cancel: threading.Event | None = None,
+    on_stage: Callable[[str, float], None] | None = None,
 ) -> RunResult:
     """Spawn the CLI once and stream its output through the agent's parser."""
     parse = PARSERS[agent.parser]
@@ -111,6 +123,9 @@ def run_once(
         )
     except FileNotFoundError:
         result.error = f"agent CLI not found: {argv[0]}"
+        result.total_ms = (time.monotonic() - t0) * 1000
+        if on_stage:
+            on_stage("done", result.total_ms)
         return result
     assert proc.stdout is not None  # noqa: S101 - set by PIPE above
     assert proc.stderr is not None  # noqa: S101 - set by PIPE above
@@ -144,6 +159,12 @@ def run_once(
             except BrokenPipeError:
                 pass
         for raw in proc.stdout:
+            if result.first_line_ms is None:
+                result.first_line_ms = (time.monotonic() - t0) * 1000
+                if on_stage:
+                    on_stage("output", result.first_line_ms)
+            if '"usage"' in raw:
+                result.usage = usage_from_lines([raw]) or result.usage
             line = parse(raw.rstrip("\n"))
             if line.error:
                 result.error = line.error
@@ -152,6 +173,8 @@ def run_once(
             if line.delta:
                 if result.first_output_ms is None:
                     result.first_output_ms = (time.monotonic() - t0) * 1000
+                    if on_stage:
+                        on_stage("first_delta", result.first_output_ms)
                 result.deltas.append(line.delta)
                 if on_delta:
                     on_delta(line.delta)
@@ -169,9 +192,12 @@ def run_once(
     joiner = "\n" if agent.parser == "text" else ""
     answer = final if final is not None else joiner.join(result.deltas)
     result.answer = answer.strip()[:MAX_ANSWER_CHARS]
+    tail = "".join(stderr_tail).strip()[-300:]
+    result.stderr_tail = tail
     if result.exit_code not in (0, None) and not result.answer and not result.error:
-        tail = "".join(stderr_tail).strip()[-300:]
         result.error = f"agent exited with {result.exit_code}" + (f": {tail}" if tail else "")
     if result.total_ms >= timeout_s * 1000 and not result.answer:
         result.error = f"agent timed out after {int(timeout_s)} s"
+    if on_stage:
+        on_stage("done", result.total_ms)
     return result

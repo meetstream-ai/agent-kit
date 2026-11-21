@@ -82,6 +82,37 @@ def test_meeting_text_is_wrapped_as_untrusted() -> None:
     assert rules.count("</mia_instructions>") == 1
 
 
+def test_instructions_follow_the_access_level(tmp_path: Path) -> None:
+    meeting_only = system_prompt("Nav", "", "readonly")
+    assert "meeting companion" in meeting_only
+    assert "do not run commands, change files" in meeting_only
+    ask_first = system_prompt("Nav", "", "confirm")
+    assert "Nav's computer" in ask_first
+    assert "approves each command" in ask_first
+    full = system_prompt("Nav", "", "full")
+    assert "without asking" in full
+    assert "meeting companion" not in full
+    assert "only in the meeting" not in full  # the old rule made Full refuse local work
+    assert system_prompt("Nav", "") == meeting_only  # the default is the safest level
+    assert system_prompt("Nav", "", "nonsense") == meeting_only
+
+
+def test_a_meeting_is_told_the_level_it_really_runs_at(tmp_path: Path) -> None:
+    """Full asked for without a verified owner drops to Ask first, and the agent is told so."""
+    from meetstream_agent_kit.config import BridgeConfig
+    from meetstream_agent_kit.session import MeetingSession
+
+    config = BridgeConfig(
+        agent=AGENTS["claude"], binary=str(STUB), workdir=tmp_path, max_access="full", owner="Nav"
+    )
+    decision = effective_access(config.agent, "full", "full", owner_verified=False)
+    assert decision.level == "confirm"
+    session = MeetingSession("s1", config, access=decision.level)
+    assert "approves each command" in session.rules()
+    assert "without asking" not in session.rules()
+    assert "meeting companion" in session.rules("readonly")
+
+
 def test_only_the_last_twenty_messages_are_sent() -> None:
     text = format_turn([{"speaker": "A", "text": f"m{i}"} for i in range(30)])
     assert "m9]" not in text
@@ -133,7 +164,9 @@ def test_custom_agent() -> None:
 
 
 def test_which_agents_can_ask_before_acting() -> None:
+    # Every built-in agent can (Antigravity since it runs over ACP); a custom command cannot.
     assert {name for name, agent in AGENTS.items() if agent.can_confirm} == {
+        "agy",
         "claude",
         "codex",
         "copilot",
@@ -141,6 +174,9 @@ def test_which_agents_can_ask_before_acting() -> None:
         "muse",
         "openclaw",
     }
+    decision = effective_access(custom_agent("mytool {prompt}"), "confirm", "", False)
+    assert decision.level == "readonly"
+    assert "cannot ask before acting" in decision.reason
 
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
@@ -157,11 +193,14 @@ def test_parsers_and_error_classes() -> None:
     assert parse_claude("not json") == (None, None, None)
     message = {"type": "item.completed", "item": {"type": "agent_message", "text": "Codex"}}
     assert parse_codex(json.dumps(message)).delta == "Codex"
-    step = {"type": "step_update", "step_update": {"step_type": "agent_response", "text_delta": "a"}}
+    # Real agy lines name their kind in "event"; "type" is still read for older builds.
+    step = {"event": "step_update", "step_update": {"step_type": "agent_response", "text_delta": "a"}}
     assert parse_agy(json.dumps(step)).delta == "a"
     assert (
-        parse_agy(json.dumps({"type": "result", "result": {"status": "failed", "error": "x"}})).error == "x"
+        parse_agy(json.dumps({"event": "result", "result": {"status": "failed", "error": "x"}})).error == "x"
     )
+    legacy = {"type": "step_update", "step_update": {"step_type": "agent_response", "text_delta": "b"}}
+    assert parse_agy(json.dumps(legacy)).delta == "b"
     assert classify_error("Failed to authenticate: OAuth token has expired") == "auth_required"
     assert classify_error("Login expired · Please run /login") == "auth_required"
     assert classify_error("rate limited") == "agent_error"
@@ -180,7 +219,7 @@ def test_parsers_and_error_classes() -> None:
         ("claude", "full", "full", False, "confirm"),  # full needs a verified owner
         ("codex", "full", "full", True, "full"),
         ("hermes", "confirm", "", False, "confirm"),
-        ("agy", "confirm", "", False, "readonly"),  # agy cannot ask before acting
+        ("agy", "confirm", "", False, "confirm"),  # agy asks Allow/Deny over ACP
         ("agy", "full", "", True, "full"),
         ("claude", "bogus", "full", True, "readonly"),
     ],

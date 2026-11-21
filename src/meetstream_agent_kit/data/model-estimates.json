@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "kit_version": "0.3.5",
+  "generated_at": "2026-11-19T02:47:10+00:00",
+  "assumptions": {
+    "turns_per_hour": 20,
+    "meeting_tokens_per_turn": 120,
+    "session": "warm",
+    "sample_turn": "one short meeting turn, read-only, through the CLI's one-run mode"
+  },
+  "estimates": [
+    {
+      "agent": "agy",
+      "model": "claude-sonnet-4-6",
+      "measured_at": "2026-11-18T21:28:38+00:00",
+      "turn": {
+        "input": 11199,
+        "cached": 0,
+        "output": 64,
+        "thinking": 0,
+        "cost_usd": null
+      },
+      "per_hour": {
+        "input": 258940,
+        "output": 1280,
+        "total": 260220,
+        "cost_usd": null
+      },
+      "first_output_ms": 4138,
+      "first_output_mode": "cold"
+    },
+    {
+      "agent": "agy",
+      "model": "gemini-3.8-flash-high",
+      "measured_at": "2026-11-18T21:28:21+00:00",
+      "turn": {
+        "input": 9827,
+        "cached": 0,
+        "output": 1102,
+        "thinking": 1087,
+        "cost_usd": null
+      },
+      "per_hour": {
+        "input": 428720,
+        "output": 22040,
+        "total": 450760,
+        "cost_usd": null
+      },
+      "first_output_ms": 14399,
+      "first_output_mode": "cold"
+    },
+    {
+      "agent": "agy",
+      "model": "gemini-3.8-flash-low",
+      "measured_at": "2026-11-18T21:28:33+00:00",
+      "turn": {
+        "input": 9800,
+        "cached": 0,
+        "output": 16,
+        "thinking": 0,
+        "cost_usd": null
+      },
+      "per_hour": {
+        "input": 221840,
+        "output": 320,
+        "total": 222160,
+        "cost_usd": null
+      },
+      "first_output_ms": 3800,
+      "first_output_mode": "cold",
+      "note": "rounded from the bench output"
+    },
+    {
+      "agent": "agy",
+      "model": "gemini-3.8-flash-medium",
+      "measured_at": "2026-11-18T21:28:28+00:00",
+      "turn": {
+        "input": 9825,
+        "cached": 0,
+        "output": 252,
+        "thinking": 237,
+        "cost_usd": null
+      },
+      "per_hour": {
+        "input": 267180,
+        "output": 5040,
+        "total": 272220,
+        "cost_usd": null
+      },
+      "first_output_ms": 6450,
+      "first_output_mode": "cold"
+    },
+    {
+      "agent": "claude",
+      "model": "haiku",
+      "measured_at": "2026-11-18T20:40:00+00:00",
+      "turn": {
+        "input": 12000,
+        "cached": 0,
+        "output": 586,
+        "thinking": 0,
+        "cost_usd": 0.014026
+      },
+      "per_hour": {
+        "input": 374140,
+        "output": 11720,
+        "total": 385860,
+        "cost_usd": 0.4300073383124106
+      },
+      "first_output_ms": null,
+      "first_output_mode": "cold",
+      "note": "rounded from the bench output; cost is Claude Code's own API-rate estimate"
+    },
+    {
+      "agent": "claude",
+      "model": "sonnet",
+      "measured_at": "2026-11-18T20:40:00+00:00",
+      "turn": {
+        "input": 9100,
+        "cached": 0,
+        "output": 46,
+        "thinking": 0,
+        "cost_usd": 0.01322
+      },
+      "per_hour": {
+        "input": 213540,
+        "output": 920,
+        "total": 214460,
+        "cost_usd": 0.30998919746337195
+      },
+      "first_output_ms": null,
+      "first_output_mode": "cold",
+      "note": "rounded from the bench output; cost is Claude Code's own API-rate estimate"
+    }
+  ]
+}

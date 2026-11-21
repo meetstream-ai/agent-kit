@@ -8,7 +8,7 @@ from pathlib import Path
 
 from meetstream_agent_kit.access import AccessLevel
 from meetstream_agent_kit.agents import AgentSpec
-from meetstream_agent_kit.console import ask_confirm
+from meetstream_agent_kit.console import ask_confirm, notify
 from meetstream_agent_kit.constants import DEFAULT_TURN_TIMEOUT_S
 
 
@@ -29,6 +29,14 @@ class BridgeConfig:
     prime: bool = True
     """Run one tiny turn at meeting start so the agent's prompt cache is warm."""
     quiet: bool = False
+    debug: bool = False
+    """Log every message type the agent sends (``--debug`` or ``MS_AGENT_KIT_DEBUG=1``); never their text."""
+    meeting_notes: str = ""
+    """The owner's MEETING.md, added to the bridge's rules on the first turn ('' = none)."""
+    ignore_rules: bool = False
+    """Skip the work folder's project rules where the agent CLI can (see ``AgentSpec.ignore_rules_args``)."""
+    notify: Callable[[str, str], None] = notify
+    """Desktop notification (title, text) when the agent fails in a meeting."""
     confirm: Callable[[str], bool] = ask_confirm
     """Asks the owner to allow one action (``confirm`` access)."""
     runtime_dir: Path | None = None

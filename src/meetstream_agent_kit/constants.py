@@ -5,8 +5,20 @@ from typing import Final
 DEFAULT_PORT: Final = 8787
 """``meetstream-agent-kit serve`` listens on 127.0.0.1 at this port unless ``--port`` is given."""
 
-DEFAULT_TURN_TIMEOUT_S: Final = 170.0
-"""Longest one meeting turn may run before it is stopped."""
+DEFAULT_TURN_TIMEOUT_S: Final = 60.0
+"""A warm turn with no output for this long is stopped (the clock pauses while a meeting tool
+waits on MIA); a one-run-per-turn agent gets this long in all. Kept under MIA's own 120 s read
+timeout, so MIA hears the short reply below instead of going silent."""
+
+TIMEOUT_REPLY: Final = "That took too long, so I stopped it."
+"""Spoken in the meeting when a turn is stopped for taking too long."""
+
+CANCEL_GRACE_S: Final = 5.0
+"""After a timeout, how long the agent gets to end the turn on request before it is restarted."""
+
+PREEMPT_WAIT_S: Final = 0.2
+"""A new turn waits this long for the last one before stopping it (MIA runs one turn at a time,
+so a new turn means MIA has given up on the last one)."""
 
 TOOL_RESULT_TIMEOUT_S: Final = 60.0
 """How long the agent waits for MIA to run a meeting tool."""
