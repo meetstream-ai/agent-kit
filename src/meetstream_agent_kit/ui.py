@@ -319,6 +319,9 @@ def question_prompt(question: str, default: str) -> str:
     return f"{paint('?', 'cyan', 'bold')} {paint(question, 'bold')}{hint} {paint(_ANSWER_MARK, 'dim')} "
 
 
+ESC_SEQUENCE_WAIT_S = 0.25
+"""After an escape byte, how long to wait for the rest of an arrow key that arrives in pieces."""
+
 _UP: Final = ("\x1b[A", "\x1bOA", "k")
 _DOWN: Final = ("\x1b[B", "\x1bOB", "j")
 
@@ -327,7 +330,7 @@ def _read_key(fd: int) -> str:
     """One key press; an escape sequence (arrow keys) is read whole even when it arrives in pieces."""
     data = os.read(fd, 1)
     if data == b"\x1b":
-        while len(data) < 8 and select.select([fd], [], [], 0.1)[0]:
+        while len(data) < 8 and select.select([fd], [], [], ESC_SEQUENCE_WAIT_S)[0]:
             data += os.read(fd, 1)
             if len(data) > 2 and (data[-1:].isalpha() or data[-1:] == b"~"):
                 break

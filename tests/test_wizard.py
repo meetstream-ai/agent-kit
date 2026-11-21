@@ -413,10 +413,40 @@ def test_arrow_keys_pick_an_option() -> None:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="pseudo-terminals are Unix only")
-def test_an_arrow_key_that_arrives_in_pieces_still_counts() -> None:
-    # Over a slow link the escape byte and the rest of the sequence come in separate reads.
-    out = _menu_in_a_terminal([b"\x1b", b"[B", b"\r"], gap_s=0.03)
-    assert "PICKED 1" in out
+def test_an_arrow_key_that_arrives_in_pieces_still_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Over a slow link the escape byte and the rest of an arrow key come in separate reads.
+
+    No race with the clock: the rest is written only after the reader has taken the escape
+    byte, and the wait is generous here (CI runners can pause a thread for a while).
+    """
+    import os
+    import threading
+    import time
+
+    from meetstream_agent_kit import ui
+
+    monkeypatch.setattr(ui, "ESC_SEQUENCE_WAIT_S", 10.0)
+    read_fd, write_fd = os.pipe()
+    got: list[str] = []
+    try:
+        os.write(write_fd, b"\x1b")
+        reader = threading.Thread(target=lambda: got.append(ui._read_key(read_fd)))
+        reader.start()
+        deadline = time.monotonic() + 10
+        while select_ready(read_fd) and time.monotonic() < deadline:  # wait until the escape byte is taken
+            time.sleep(0.01)
+        os.write(write_fd, b"[B")
+        reader.join(15)
+        assert got == ["\x1b[B"]
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def select_ready(fd: int) -> bool:
+    import select
+
+    return bool(select.select([fd], [], [], 0)[0])
 
 
 # ── Installing a missing agent from setup ────────────────────────────────────
