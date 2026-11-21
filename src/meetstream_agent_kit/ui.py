@@ -314,14 +314,18 @@ def answered(question: str, answer: str) -> None:
     )
 
 
-def question_prompt(question: str, default: str) -> str:
+def question_prompt(question: str, default: str, *, back: bool = False) -> str:
     hint = f" {paint('(' + default + ')', 'dim')}" if default else ""
-    return f"{paint('?', 'cyan', 'bold')} {paint(question, 'bold')}{hint} {paint(_ANSWER_MARK, 'dim')} "
+    back_hint = f" {paint('< goes back', 'dim')}" if back else ""
+    mark = paint(_ANSWER_MARK, "dim")
+    return f"{paint('?', 'cyan', 'bold')} {paint(question, 'bold')}{hint}{back_hint} {mark} "
 
 
 ESC_SEQUENCE_WAIT_S = 0.25
 """After an escape byte, how long to wait for the rest of an arrow key that arrives in pieces."""
 
+BACK_LABEL: Final = "← Back"
+_BACK: Final = ("\x1b", "\x1b[D", "\x1bOD")
 _UP: Final = ("\x1b[A", "\x1bOA", "k")
 _DOWN: Final = ("\x1b[B", "\x1bOB", "j")
 
@@ -384,8 +388,11 @@ def arrow_select(
     default: int = 0,
     hints: Sequence[str] = (),
     detail: Callable[[int], str] | None = None,
+    back: bool = False,
 ) -> int:
-    """Pick one option with ↑/↓ (or j/k, or its number) and Enter. Needs a terminal."""
+    """Pick one option with ↑/↓ (or j/k, or its number) and Enter. Needs a terminal.
+
+    With ``back``, Esc or ← returns -1 (go to the previous step)."""
     import termios  # Unix only; callers check is_interactive() first
     import tty
 
@@ -435,6 +442,9 @@ def arrow_select(
             if key == "\x04":  # Ctrl-D keeps the default, like end of input elsewhere
                 current = default
                 break
+            if back and key in _BACK:  # Esc or ←: the previous step
+                current = -1
+                break
             if key in _UP:
                 current = (current - 1) % len(options)
             elif key in _DOWN:
@@ -448,6 +458,9 @@ def arrow_select(
         # Fold the menu into one answered line.
         sys.stdout.write(f"\x1b[{lines + 1}F\x1b[J")
         sys.stdout.flush()
+    if current == -1:
+        answered(question, BACK_LABEL)
+        return -1
     # With a detail line the options are table rows: the answer is their first column.
     answer = plain(options[current]).split("  ")[0].strip() if detail is not None else options[current]
     answered(question, answer)

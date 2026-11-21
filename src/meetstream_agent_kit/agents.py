@@ -58,6 +58,8 @@ class AgentSpec:
     """Environment that skips some of them (both modes)."""
     ignore_rules_note: str = ""
     """What is and is not skipped, shown in setup."""
+    reports_usage: bool = False
+    """The one-run output (or usage file) carries token counts, so models can be measured."""
     usage_file_flag: str | None = None
     """One-run flag that writes a JSON usage report to a file (Hermes ``--usage-file``)."""
     login_check: tuple[str, ...] | None = None
@@ -111,6 +113,7 @@ AGENTS: Final[dict[str, AgentSpec]] = {
     for spec in (
         AgentSpec(
             name="claude",
+            reports_usage=True,
             label="Claude Code",
             binary="claude",
             oneshot_args=(
@@ -141,6 +144,7 @@ AGENTS: Final[dict[str, AgentSpec]] = {
         # its warm mode, `codex app-server`, does. Read-only is its default sandbox.
         AgentSpec(
             name="codex",
+            reports_usage=True,
             label="Codex CLI",
             binary="codex",
             oneshot_args=("exec", "--json", "--ephemeral", "--skip-git-repo-check", "-"),
@@ -185,6 +189,7 @@ AGENTS: Final[dict[str, AgentSpec]] = {
         # access level. Single runs (`-p`) soft-deny actions that need review.
         AgentSpec(
             name="agy",
+            reports_usage=True,
             label="Antigravity CLI",
             binary="agy",
             oneshot_args=("-p", "{prompt}", "--output-format", "stream-json"),
@@ -221,6 +226,7 @@ AGENTS: Final[dict[str, AgentSpec]] = {
         # bridge decides every edit/delete/move/execute permission request.
         AgentSpec(
             name="hermes",
+            reports_usage=True,
             label="Hermes Agent",
             binary="hermes",
             oneshot_args=("-z", "{prompt}"),

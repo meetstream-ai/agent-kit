@@ -215,7 +215,8 @@ def test_rows_and_details_show_real_usage_and_first_words(
     assert "first words ~5 s (cold)" in detail
     assert "vision (from docs), local actions per access level" in detail
     empty = row_text(AGENTS["openclaw"], ModelChoice("unknown"), None, 0)
-    assert "[          ] not measured" in empty
+    assert "[          ] usage n/a" in empty  # OpenClaw does not report token usage
+    assert "[          ] not measured" in row_text(AGENTS["agy"], ModelChoice("unknown"), None, 0)
     assert "no-tools vision?" in empty
     assert "—" in empty
     assert 'pick "Measure live"' in detail_text(agent, model, None)
@@ -288,7 +289,7 @@ def test_picker_preserves_default_manual_id_and_cli_default(
     tmp_path: Path, reply: str, expected: str
 ) -> None:
     replies = iter([reply, "typed"])
-    model, effort = _pick_model(
+    model, effort, _asked = _pick_model(
         Prompter(lambda _: next(replies)),
         AGENTS["agy"],
         "agy",

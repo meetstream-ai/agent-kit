@@ -15,6 +15,18 @@ All notable changes to this package. The format follows
   with Copilot CLI 1.0.114: over ACP such an account accepts only `auto`
   (`--model` is ignored and `session/set_model` rejects other models), so no
   longer list is offered.
+- Setup has a way back: every step after the first has a "← Back" row, and in
+  a terminal Esc or ← go back too (typed questions take `<`). Earlier answers
+  are kept and preselected; steps that asked nothing are skipped on the way
+  back; back from the effort question returns to the model menu.
+- A CLI that answers without reporting token usage (Copilot) is no longer
+  shown as a failure: the measurement shows its answer time and says the CLI
+  doesn't report usage. Picker rows say "usage n/a" (or MeetStream's published
+  estimate when there is one), and "Measure live" is only offered for CLIs that
+  report usage (Claude Code, Codex, Antigravity, Hermes).
+- When the only model on offer is the default (Copilot's Auto), setup says
+  "GitHub Copilot CLI picks the model itself (Auto)" instead of a menu with two
+  near-identical rows.
 
 ## [0.3.5] - Unreleased
 

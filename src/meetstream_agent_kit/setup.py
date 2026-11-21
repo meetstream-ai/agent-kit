@@ -12,6 +12,7 @@ questions, so the wizard can be scripted and tested.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -183,6 +184,10 @@ class SetupAbortedError(Exception):
     """Input ended before setup had the answers it needs."""
 
 
+class GoBack(Exception):  # noqa: N818 - a signal, not an error
+    """The user asked for the previous step (← Back, Esc, ← or "<")."""
+
+
 class Prompter:
     """Questions on the terminal. End of input takes the default.
 
@@ -194,6 +199,8 @@ class Prompter:
         self._read = read or input
         self.interactive = (read is None and ui.is_interactive()) if interactive is None else interactive
         self.eof = False
+        self.back_allowed = False
+        """Set by the step loop: menus get a "← Back" row and "<" goes to the previous step."""
         """True once input has ended: loops that would ask again should stop."""
 
     def _line(self, prompt: str) -> str:
@@ -209,8 +216,15 @@ class Prompter:
     def ask(self, question: str, default: str = "") -> str:
         if not self.interactive:
             hint = f" [{default}]" if default else ""
-            return self._line(f"{question}{hint}: ") or default
-        typed = self._line(ui.question_prompt(question, default))
+            typed = self._line(f"{question}{hint}: ")
+            if typed == "<" and self.back_allowed:
+                raise GoBack
+            return typed or default
+        typed = self._line(ui.question_prompt(question, default, back=self.back_allowed))
+        if typed == "<" and self.back_allowed:
+            self._fold(len(question) + len(default) + 9)
+            ui.answered(question, ui.BACK_LABEL)
+            raise GoBack
         answer = typed or default
         self._fold(len(question) + len(default) + len(typed) + 8)
         ui.answered(question, answer or "(blank)")
@@ -264,10 +278,27 @@ class Prompter:
         hints: Sequence[str] = (),
         detail: Callable[[int], str] | None = None,
     ) -> int:
+        if self.back_allowed:  # a "← Back" row at the end; Esc or ← work too in a terminal
+            hints = [*hints, *[""] * (len(options) - len(hints)), ""]
+            options = [*options, ui.BACK_LABEL]
         if self.interactive:
-            if detail is not None:
-                return ui.arrow_select(question.strip(), options, default, hints, detail=detail)
-            return ui.arrow_select(question.strip(), options, default, hints)
+            index = ui.arrow_select(
+                question.strip(), options, default, hints, detail=detail, back=self.back_allowed
+            )
+        else:
+            index = self._choose_plain(question, options, default, hints, detail)
+        if self.back_allowed and index in (-1, len(options) - 1):
+            raise GoBack
+        return index
+
+    def _choose_plain(
+        self,
+        question: str,
+        options: Sequence[str],
+        default: int,
+        hints: Sequence[str],
+        detail: Callable[[int], str] | None,
+    ) -> int:
         say(question)
         pad = max(len(option) for option in options) + 2
         for index, option in enumerate(options, 1):
@@ -443,8 +474,10 @@ def _pick_model(
     catalog: Callable[[AgentSpec, str], ModelCatalog],
     compare_config: Callable[[], BridgeConfig],
     measure_model: Callable[[BridgeConfig, str, str], Measured],
-) -> tuple[str, str]:
-    """(model, effort): '' means the CLI's own default. MIA's agent config can still choose another."""
+) -> tuple[str, str, bool]:
+    """(model, effort, asked): '' means the CLI's own default; asked is False when there was no choice.
+
+    MIA's agent config can still choose another model."""
     with ui.spinner(f"Asking {agent.label} which models it offers"):
         listed = catalog(agent, binary)
     if listed.models:
@@ -455,6 +488,13 @@ def _pick_model(
         ui.note(listed.note)
     last_model = last.model if last and last.agent == agent.name else ""
     last_effort = last.effort if last and last.agent == agent.name else ""
+    only = listed.models[0] if len(listed.models) == 1 else None
+    if only is not None and only.id in (listed.default_model, "auto"):
+        # Nothing to choose (Copilot offers only Auto): say so instead of two near-identical rows.
+        name = "Auto" if only.id == "auto" else only.id
+        ui.ok(f"{agent.label} picks the model itself ({name})")
+        efforts = listed.efforts_for(only.id)
+        return only.id, _pick_effort(prompt, listed, only.id, last_effort), bool(efforts)
     while True:
         shown = _menu_models(listed, last_model)
         fallback = next((m for m in listed.models if m.id == listed.default_model), None)
@@ -473,21 +513,21 @@ def _pick_model(
             (project_hour(cached[m.id].usage).total for m in measurable if m.id in cached), default=0
         )
         labels = [estimates.row_text(agent, m, cached.get(m.id), largest) for m in shown]
-        labels += [
-            "Type another model id",
-            estimates.row_text(agent, cli_default, cached.get(""), largest),
-            "Measure live (one short real turn per model)",
-        ]
+        labels += ["Type another model id", estimates.row_text(agent, cli_default, cached.get(""), largest)]
         details = [estimates.detail_text(agent, m, cached.get(m.id)) for m in shown]
         details += [
             "Enter a model id from your CLI.",
             estimates.detail_text(agent, cli_default, cached.get("")),
-            "Choose models to measure. Each runs one short real turn and uses your plan or API credits.",
         ]
+        if agent.reports_usage:  # measuring needs the CLI's own token counts
+            labels.append("Measure live (one short real turn per model)")
+            details.append(
+                "Choose models to measure. Each runs one short real turn and uses your plan or API credits."
+            )
         wanted = last_model or listed.default_model
         default = next((i for i, m in enumerate(shown) if m.id == wanted), len(shown) + 1)
         index = prompt.choose("Which model?", labels, default, detail=details.__getitem__)
-        if index == len(shown) + 2:
+        if agent.reports_usage and index == len(shown) + 2:
             ticked = sorted(range(len(measurable)), key=lambda i: measurable[i].id in cached)[:COMPARE_MAX]
             picked = prompt.choose_many(
                 "Models to measure (one short real turn each)",
@@ -510,7 +550,11 @@ def _pick_model(
             model = prompt.ask("Model id (as the CLI names it)", last_model).strip()
         else:
             model = shown[index].id if index < len(shown) else ""
-        return model, _pick_effort(prompt, listed, model, last_effort)
+        try:
+            return model, _pick_effort(prompt, listed, model, last_effort), True
+        except GoBack:  # back from the effort question: the model menu again
+            last_model = model
+            continue
 
 
 def _review_project_rules(
@@ -679,6 +723,10 @@ def _pick_tunnel(
         return kind, ""
 
 
+def _blank_answers() -> SetupAnswers:
+    return SetupAnswers("", "", "", "readonly", "none", "", "")
+
+
 def ask_setup(
     prompt: Prompter,
     last: SetupAnswers | None,
@@ -697,27 +745,50 @@ def ask_setup(
     ``offer_install`` (default: only at a terminal) lets setup run a missing agent's
     official install command after a yes; otherwise the command is only shown.
     """
-    ui.step(1, SETUP_STEPS, "Agent")
-    agent, command = _pick_agent(prompt, which, last.agent if last else "", run, offer_install)
-    binary = which(agent.binary)  # the same lookup _pick_agent used (tests pass a pretend PATH)
-    if binary and not Path(binary).is_file():
-        binary = None
-    if binary and not command:
-        _check_login(prompt, agent, binary, run)
-
-    ui.step(2, SETUP_STEPS, "Model")
+    a: dict[str, Any] = {}  # answers so far; kept when going back
     default_dir = last.workdir if last else (cwd or str(meeting_workspace()))
-    model = effort = ""
-    if command:
-        ui.note("A custom command picks its own model.")
-    elif binary is None:
-        ui.note(f"{agent.label} is not installed yet, so it uses its own default model.")
-    else:
-        model, effort = _pick_model(
+    workspace = meeting_workspace()
+
+    def step_agent() -> bool:
+        ui.step(1, SETUP_STEPS, "Agent")
+        previous = a.get("agent")
+        agent, command = _pick_agent(
+            prompt, which, previous.name if previous else (last.agent if last else ""), run, offer_install
+        )
+        binary = which(agent.binary)  # the same lookup _pick_agent used (tests pass a pretend PATH)
+        if binary and not Path(binary).is_file():
+            binary = None
+        if binary and not command:
+            _check_login(prompt, agent, binary, run)
+        if previous is not None and previous.name != agent.name:
+            a.pop("model", None)  # another agent: its own models
+            a.pop("effort", None)
+        a.update(agent=agent, command=command, binary=binary)
+        return True
+
+    def step_model() -> bool:
+        ui.step(2, SETUP_STEPS, "Model")
+        agent, command, binary = a["agent"], a["command"], a["binary"]
+        if command:
+            ui.note("A custom command picks its own model.")
+            a.update(model="", effort="")
+            return False
+        if binary is None:
+            ui.note(f"{agent.label} is not installed yet, so it uses its own default model.")
+            a.update(model="", effort="")
+            return False
+        before = (
+            dataclasses.replace(
+                last or _blank_answers(), agent=agent.name, model=a["model"], effort=a["effort"]
+            )
+            if "model" in a
+            else last
+        )
+        model, effort, asked = _pick_model(
             prompt,
             agent,
             binary,
-            last,
+            before,
             catalog=catalog,
             compare_config=lambda: BridgeConfig(
                 agent=agent,
@@ -727,50 +798,96 @@ def ask_setup(
             ),
             measure_model=measure_model,
         )
+        a.update(model=model, effort=effort)
+        return asked
 
-    ui.step(3, SETUP_STEPS, "Meeting context")
-    workspace = meeting_workspace()
-    ui.note(f"{ui.short_path(str(workspace))} is a quiet meeting workspace: no project rules on every turn.")
-    ui.note("Type a project folder instead to let your agent see that code.")
-    while True:
-        workdir = str(Path(prompt.ask("Folder your agent works in", default_dir)).expanduser().resolve())
-        if Path(workdir) == workspace.resolve() and not workspace.exists():
-            workspace.mkdir(parents=True, exist_ok=True)
-            ui.ok(f"Created {ui.short_path(str(workspace))}")
-        check = checks.check_workdir(Path(workdir))
-        if check.ok:
-            break
-        ui.fail(check.message)
-    workdir, ignore_rules, use_meeting_md = _review_project_rules(prompt, agent, Path(workdir), workspace)
-    context.ensure_meeting_file()
-    _show_context(agent, workdir, ignore_rules, use_meeting_md)
+    def step_context() -> bool:
+        ui.step(3, SETUP_STEPS, "Meeting context")
+        ui.note(
+            f"{ui.short_path(str(workspace))} is a quiet meeting workspace: no project rules on every turn."
+        )
+        ui.note("Type a project folder instead to let your agent see that code.")
+        while True:
+            folder = a.get("workdir", default_dir)
+            workdir = str(Path(prompt.ask("Folder your agent works in", folder)).expanduser().resolve())
+            if Path(workdir) == workspace.resolve() and not workspace.exists():
+                workspace.mkdir(parents=True, exist_ok=True)
+                ui.ok(f"Created {ui.short_path(str(workspace))}")
+            check = checks.check_workdir(Path(workdir))
+            if check.ok:
+                break
+            ui.fail(check.message)
+        workdir, ignore_rules, use_meeting_md = _review_project_rules(
+            prompt, a["agent"], Path(workdir), workspace
+        )
+        context.ensure_meeting_file()
+        _show_context(a["agent"], workdir, ignore_rules, use_meeting_md)
+        a.update(workdir=workdir, ignore_rules=ignore_rules, use_meeting_md=use_meeting_md)
+        return True
 
-    ui.step(4, SETUP_STEPS, "Access")
-    ui.note("The most this computer allows. Your MIA agent's settings can only lower it.")
-    access_index = prompt.choose(
-        "Most access this computer allows",
-        [label for _, label, _ in ACCESS_CHOICES],
-        [name for name, _, _ in ACCESS_CHOICES].index(last.max_access) if last else 0,
-        [hint for _, _, hint in ACCESS_CHOICES],
-    )
+    def step_access() -> bool:
+        ui.step(4, SETUP_STEPS, "Access")
+        ui.note("The most this computer allows. Your MIA agent's settings can only lower it.")
+        names = [name for name, _, _ in ACCESS_CHOICES]
+        current = a.get("max_access", last.max_access if last else names[0])
+        index = prompt.choose(
+            "Most access this computer allows",
+            [label for _, label, _ in ACCESS_CHOICES],
+            names.index(current) if current in names else 0,
+            [hint for _, _, hint in ACCESS_CHOICES],
+        )
+        a["max_access"] = names[index]
+        return True
 
-    ui.step(5, SETUP_STEPS, "Tunnel")
-    tunnel, tunnel_url = _pick_tunnel(prompt, which, last, detect_ngrok, probe_ngrok)
+    def step_tunnel() -> bool:
+        ui.step(5, SETUP_STEPS, "Tunnel")
+        earlier = (
+            dataclasses.replace(last or _blank_answers(), tunnel=a["tunnel"], tunnel_url=a["tunnel_url"])
+            if "tunnel" in a
+            else last
+        )
+        a["tunnel"], a["tunnel_url"] = _pick_tunnel(prompt, which, earlier, detect_ngrok, probe_ngrok)
+        return True
 
-    ui.step(6, SETUP_STEPS, "Your name")
-    owner = prompt.ask(
-        "Your name as it shows in meetings", last.owner if last else os.environ.get("USER", "")
-    )
+    def step_name() -> bool:
+        ui.step(6, SETUP_STEPS, "Your name")
+        a["owner"] = prompt.ask(
+            "Your name as it shows in meetings",
+            a.get("owner", last.owner if last else os.environ.get("USER", "")),
+        )
+        return True
+
+    steps: list[Callable[[], bool]] = [
+        step_agent,
+        step_model,
+        step_context,
+        step_access,
+        step_tunnel,
+        step_name,
+    ]
+    asked_at: list[bool] = [False] * len(steps)
+    index = 0
+    while index < len(steps):
+        prompt.back_allowed = index > 0
+        try:
+            asked_at[index] = steps[index]()
+            index += 1
+        except GoBack:
+            index -= 1
+            while index > 0 and not asked_at[index]:  # skip steps that asked nothing (nothing to change)
+                index -= 1
+    prompt.back_allowed = False
+    agent = a["agent"]
     return SetupAnswers(
         agent=agent.name,
-        command=command,
-        workdir=workdir,
-        max_access=ACCESS_CHOICES[access_index][0],
-        tunnel=tunnel,
-        tunnel_url=tunnel_url,
-        owner=owner,
-        model=model,
-        effort=effort,
-        ignore_rules="yes" if ignore_rules else "",
-        meeting_md="" if use_meeting_md else "no",
+        command=a["command"],
+        workdir=a["workdir"],
+        max_access=a["max_access"],
+        tunnel=a["tunnel"],
+        tunnel_url=a["tunnel_url"],
+        owner=a["owner"],
+        model=a["model"],
+        effort=a["effort"],
+        ignore_rules="yes" if a["ignore_rules"] else "",
+        meeting_md="" if a["use_meeting_md"] else "no",
     )

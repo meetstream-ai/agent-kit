@@ -137,7 +137,9 @@ def row_text(
     """A clipped usage bar, feature chips and cold first-output time."""
     hour = project_hour(estimate.usage) if estimate else None
     filled = bar(hour.total, largest, 10) if hour else ""
-    usage = f"{human_tokens(hour.total)}/h" if hour else "not measured"
+    usage = (
+        f"{human_tokens(hour.total)}/h" if hour else ("not measured" if agent.reports_usage else "usage n/a")
+    )
     if hour and hour.cost_usd is not None:
         usage += f" ${hour.cost_usd:.2f}/h"
     chips = []
@@ -176,8 +178,10 @@ def detail_text(agent: AgentSpec, model: ModelChoice, estimate: Estimate | None)
             else "first words —",
             estimate.source,
         ]
-    else:
+    elif agent.reports_usage:
         parts.append("not measured yet")
+    else:
+        parts.append(f"usage not available: {agent.label} doesn't report token usage")
     names = {"talk": "talk", "tools": "meeting tools", "vision": "vision", "local": "local actions"}
     descriptions = []
     for feature in features(agent, model):
@@ -192,6 +196,6 @@ def detail_text(agent: AgentSpec, model: ModelChoice, estimate: Estimate | None)
             name += f" ({feature.source})"
         descriptions.append(name)
     parts.append(", ".join(descriptions))
-    if not estimate:
+    if not estimate and agent.reports_usage:
         parts.append('pick "Measure live" to run one short turn per model')
     return " · ".join(parts)

@@ -63,16 +63,15 @@ def test_the_picker_never_shows_a_model_twice() -> None:
     assert [m.id for m in unique([ModelChoice("a"), ModelChoice("b"), ModelChoice("a")])] == ["a", "b"]
 
 
-def test_setup_shows_the_note_and_one_auto_row(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    feed = iter(["1", ""])  # auto, then the CLI's effort
+def test_setup_says_copilot_picks_the_model_itself(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only Auto on offer: one plain line, no menu with two near-identical rows."""
 
     def read(_q: str) -> str:
-        try:
-            return next(feed)
-        except StopIteration:
-            raise EOFError from None
+        raise EOFError
 
-    model, _effort = _pick_model(
+    model, _effort, asked = _pick_model(
         Prompter(read),
         AGENTS["copilot"],
         "copilot",
@@ -88,6 +87,8 @@ def test_setup_shows_the_note_and_one_auto_row(tmp_path: Path, capsys: pytest.Ca
     )
     out = capsys.readouterr().out
     assert model == "auto"
-    assert out.count("1) auto") == 1
-    assert "2) auto" not in out
+    assert asked is False  # nothing to choose, so going back skips this step
+    assert "GitHub Copilot CLI picks the model itself (Auto)" in out
+    assert "1) auto" not in out
+    assert "The CLI's default" not in out
     assert "github.com/settings/copilot" in out

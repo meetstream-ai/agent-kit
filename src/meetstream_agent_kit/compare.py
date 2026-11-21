@@ -87,7 +87,7 @@ def measure(config: BridgeConfig, model: str, effort: str) -> Measured:
         if report is not None:
             report.unlink(missing_ok=True)
     error = result.error or ("" if result.answer else "the CLI returned no answer")
-    error = error or ("" if usage else "the CLI reported no token usage")
+    # An answer without token counts is not a failure: some CLIs (Copilot) never report them.
     measured = Measured(model, usage, result.total_ms / 1000, error, result.first_output_ms)
     estimates.save(config.agent.name, model, measured)
     return measured
@@ -110,6 +110,11 @@ def compare(
                 f"{model or 'default'}  {human_tokens(measured.usage.input)} in · "
                 f"{human_tokens(measured.usage.output)} out  ({measured.seconds:.1f} s)"
             )
+        elif not measured.error:
+            ui.ok(
+                f"{model or 'default'} answered in {measured.seconds:.1f} s · "
+                f"{config.agent.label} doesn't report token usage"
+            )
         else:
             ui.fail(f"{model or 'default'}: {measured.error[:160]}")
         results.append(measured)
@@ -129,6 +134,8 @@ def chart_lines(
         (m.model, project_hour(m.usage, a), m.seconds) for m in results if m.usage and not m.error
     ]
     if not rows:
+        if any(m.usage is None and not m.error for m in results):
+            return ["  This CLI doesn't report token usage, so there is no usage to chart (times are above)."]
         return ["  No model reported token usage, so there is nothing to chart."]
     name_w = min(32, max(len(name or "default") for name, _, _ in rows))
     largest = max(estimate.total for _, estimate, _ in rows)
