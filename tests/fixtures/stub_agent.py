@@ -377,6 +377,7 @@ def main():
         _rpc_loop(_app_server)
         return 0
     if sys.argv[1:3] == ["auth", "status"]:
+        time.sleep(float(os.environ.get("STUB_AUTH_STATUS_S", "0")))  # a slow login check (CI runners)
         if os.environ.get("STUB_AUTH_FAIL") == "1":
             print("Not logged in · Please run /login")
             return 1

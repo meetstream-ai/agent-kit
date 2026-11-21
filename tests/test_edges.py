@@ -39,7 +39,8 @@ def test_serve_runs_answers_and_stops_cleanly(tmp_path: Path, home: Path) -> Non
     proc = subprocess.Popen(
         [sys.executable, "-m", "meetstream_agent_kit", "serve", "--binary", str(STUB),
          "--workdir", str(tmp_path), "--port", str(port), "--no-prime"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=dict(os.environ),
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env={**os.environ, "STUB_AUTH_STATUS_S": "1.5"},  # as slow as a cold CI runner
     )  # fmt: skip
     try:
         request = urllib.request.Request(
@@ -56,7 +57,10 @@ def test_serve_runs_answers_and_stops_cleanly(tmp_path: Path, home: Path) -> Non
                     raise
                 time.sleep(0.1)
         assert health["agent"] == "claude"
-        assert (home / "run" / f"serve-{port}.json").exists()
+        run_file = home / "run" / f"serve-{port}.json"
+        while not run_file.exists():  # written once the summary is printed: the bridge is ready
+            assert time.monotonic() < deadline, "the bridge never wrote its run file"
+            time.sleep(0.1)
     finally:
         proc.send_signal(signal.SIGINT)
         try:

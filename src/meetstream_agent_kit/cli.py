@@ -267,7 +267,7 @@ def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: s
         if exc.errno == errno.EADDRINUSE:
             _fail_on(checks.port_in_use_message(home, port))
         raise CliError(f"cannot listen on 127.0.0.1:{port}: {exc.strerror}") from exc
-    lock = checks.write_lock(home, server.port)
+    lock: Path | None = None
     _stop_on_signals()
     runner = threading.Thread(target=server.serve_forever, daemon=True, name="bridge")
     runner.start()
@@ -278,6 +278,10 @@ def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: s
         public_url = tun.start()
         login = server.login.check(force=True)
         _print_running(config, server.port, tunnel, public_url, token, login.state, login.detail)
+        sys.stdout.flush()
+        # The run file says "ready": written only once everything above is printed, so whoever
+        # waits for it (a script, a test, a second `serve`) never stops the bridge mid-start-up.
+        lock = checks.write_lock(home, server.port)
         while runner.is_alive():
             runner.join(0.5)
     except KeyboardInterrupt:
@@ -289,7 +293,8 @@ def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: s
         server.shutdown()
         server.close_all()
         server.server_close()
-        lock.unlink(missing_ok=True)
+        if lock is not None:
+            lock.unlink(missing_ok=True)
     return EXIT_OK
 
 
