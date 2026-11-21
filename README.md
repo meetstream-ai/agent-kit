@@ -69,24 +69,25 @@ text only.
 
 ## Before you start
 
-MeetStream has two ways to integrate. Most projects need the first one:
+MeetStream has three ways to integrate. This kit is flow 2b. Overview:
+[Integration paths](https://docs.meetstream.ai/guides/introduction/integration-paths).
 
-1. **Bot API: meeting bots and recording.** Send a bot to Zoom, Google Meet or Microsoft Teams, then get
-   recordings, transcripts, participants, chat and webhooks after the call, or live data during it.
-   You do not need this kit for that. Start at the [docs](https://docs.meetstream.ai/guides/get-started/create-your-first-bot).
-2. **Agents API: a voice agent in the meeting** (API name MIA). MIA has three setups, in this order:
-
-| Setup | What you do | Price per meeting hour |
+| Flow | What you do | Price per meeting hour |
 |---|---|---|
-| a. MeetStream's inbuilt keys (default) | Pick the modules (speech-to-text, LLM, voice, or just the LLM) and the models. No provider account. Inbuilt keys cover OpenAI and Deepgram today. | Bot price + $0.25 agent infrastructure + the per-hour price of the models you pick. The dashboard agent editor shows the rate before the bot runs. |
-| b. Your own provider keys | Save your keys (OpenAI, Anthropic, Deepgram, ElevenLabs and others) in the dashboard and pick any supported model. | Bot price + $0.25 agent infrastructure. Your provider bills you for model usage. |
-| c. **Your own agent: this kit** | Your agent CLI on your computer, on your own subscription, writes what MIA says. | Bot price + $0.25 agent infrastructure. MeetStream charges no model tokens for your agent's replies. |
+| 1. Recording only (Bot API) | Send a bot to Zoom, Google Meet or Microsoft Teams, then get recordings, transcripts, participants, chat and webhooks after the call, or live data during it. You do not need this kit for that. Start at the [docs](https://docs.meetstream.ai/guides/get-started/create-your-first-bot). | Bot price |
+| 2a. Agents in meetings, your own stack: bridge server | The bot streams live audio to your server and takes audio, chat and images back over a control socket. You run your own speech-to-text, LLM and voice, hosted or local. See [Bridge server architecture](https://docs.meetstream.ai/guides/websockets/bridge-server-architecture) and the [MeetStream Bridge](https://github.com/meetstream-ai/meetstream-agent) starter. | Bot price only. No agent infrastructure, no model tokens. |
+| 2b. Agents in meetings, your own stack: **your own agent as the brain (this kit)** | MIA joins the call, and your agent CLI on your computer, on your own subscription, writes what MIA says (`model.provider: "local_agent"`). | Bot price + $0.25 agent infrastructure. MeetStream charges no model tokens for your agent's replies. |
+| 3. Managed agent infrastructure (Agents API, MIA) | MeetStream hosts the agent. 3a: MeetStream's inbuilt keys (OpenAI and Deepgram today). 3b: your own provider keys (OpenAI, Anthropic, Deepgram, ElevenLabs and others). | Bot price + $0.25 agent infrastructure + the models you pick. The dashboard agent editor shows the rate before the bot runs. |
 
-The bot price is $0.35 per recording hour ($0.25 at volume), see [pricing](https://meetstream.ai/pricing).
-Inbuilt keys are not on for every account yet. If the API answers *"MeetStream-managed keys are not
-available for … Use your own key."*, use your own provider keys. MIA's speech-to-text and voice still
-need a provider in setup c too: your own keys, or inbuilt keys where your account has them. Details:
-[Voice agent pricing and keys](https://docs.meetstream.ai/guides/mia/pricing-and-keys).
+Flow 2 is the one to try first when you want an agent in the meeting. Pick
+flow 3 if you want no infrastructure work. The bot price is $0.35 per recording
+hour ($0.25 at volume), see [pricing](https://meetstream.ai/pricing).
+
+MIA's speech-to-text and voice still need a provider in flow 2b too: your own
+keys, or inbuilt keys where your account has them. Inbuilt keys are not on for
+every account yet. If the API answers *"MeetStream-managed keys are not
+available for … Use your own key."*, use your own provider keys and do not
+retry. Details: [Voice agent pricing and keys](https://docs.meetstream.ai/guides/mia/pricing-and-keys).
 
 Pick the Agent Kit only when you want your own agent CLI to answer. Know this first:
 
@@ -363,9 +364,10 @@ GitHub release.
 
 ## Docs
 
-- [MIA Screen Sharing and Custom Agents](https://docs.meetstream.ai/guides/features/mia-screen-sharing-and-custom-agents): the full `local_agent` guide (setup c)
+- [MIA Screen Sharing and Custom Agents](https://docs.meetstream.ai/guides/features/mia-screen-sharing-and-custom-agents): the full `local_agent` guide (flow 2b)
 - [Voice agent pricing and keys](https://docs.meetstream.ai/guides/mia/pricing-and-keys): $0.25 per hour agent infrastructure, inbuilt keys, your own keys
-- [Two ways to integrate](https://docs.meetstream.ai/guides/introduction/integration-paths): the Bot API and the Agents API
+- [Integration paths](https://docs.meetstream.ai/guides/introduction/integration-paths): recording only, your own stack (bridge or your own agent), managed agents
+- [Bridge server architecture](https://docs.meetstream.ai/guides/websockets/bridge-server-architecture): flow 2a, your own speech-to-text, LLM and voice
 - [What is MIA](https://docs.meetstream.ai/guides/mia/what-is-mia) and the [MIA API guide](https://docs.meetstream.ai/guides/mia/mia-api-guide)
 
 For the latest details, fetch a page with `.md` appended, read
