@@ -52,9 +52,14 @@ class Price:
 
 def normalize(model: str) -> str:
     """``nous:anthropic/claude-sonnet-4.6`` or ``claude-sonnet-4.6:free`` -> ``claude-sonnet-4-6``."""
-    name = model.strip().lower().rsplit("/", 1)[-1]
-    name = max(name.split(":"), key=len)  # drops a provider prefix ("nous:") or a tag (":free")
+    parts = model.strip().lower().rsplit("/", 1)[-1].split(":")
+    while len(parts) > 1 and parts[-1] in _TAGS:
+        parts.pop()  # ":free", ":thinking"
+    name = parts[1] if len(parts) > 1 else parts[0]  # "opencode-go:gpt-6-luna": Hermes' provider:model
     return name.replace(".", "-").replace("_", "-")
+
+
+_TAGS: Final = frozenset({"free", "thinking", "beta", "nitro", "floor", "online", "extended", "exacto"})
 
 
 def _number(value: Any) -> bool:

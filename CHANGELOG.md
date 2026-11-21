@@ -33,6 +33,16 @@ All notable changes to this package. The format follows
 - Esc and ← in a typed question went into the answer as escape characters.
   They now go back a step.
 
+- Hermes' model step showed only its default ("picks the model itself") and
+  "1 model from " with no source. Setup now lists the default plus the
+  provider:model pairs in `~/.hermes/config.yaml` (aliases, fallbacks,
+  delegation, MoA), read without starting Hermes (its ACP model list can take
+  over 30 s), and says how many more models your signed-in providers offer
+  ("Type another model id" takes provider:model). Only Copilot's Auto skips
+  the menu. A list that falls back to the CLI's settings names that source.
+- API-rate prices matched the provider instead of the model for Hermes ids
+  such as `openai-codex:gpt-6.2-astra`.
+
 ### Added
 
 - Model picker rows show what an hour would cost at the vendor's API rates
