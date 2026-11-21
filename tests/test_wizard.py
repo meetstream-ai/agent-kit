@@ -576,6 +576,10 @@ def test_an_agent_installed_off_path_is_found_and_explained(
             if argv[:2] == ["/bin/sh", "-c"]:
                 (bin_dir / "muse").write_text("#!/bin/sh\n", encoding="utf-8")
                 (bin_dir / "muse").chmod(0o755)
+                # Meta's installer also downloads the app beside its launcher
+                (bin_dir / ".muse-version").write_text("1.4.25-R9361.1\n", encoding="utf-8")
+                (bin_dir / "muse-bin-1.4.25-R9361.1").write_text("app", encoding="utf-8")
+                (bin_dir / "muse-bin-1.4.25-R9361.1").chmod(0o755)
             return 0
 
     machine = OffPath("curl", "bash")

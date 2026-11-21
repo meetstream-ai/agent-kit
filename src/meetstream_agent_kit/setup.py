@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -371,43 +372,90 @@ def _installed_off_path(binary: str) -> Path | None:
     return None
 
 
+_MUSE_VERSION: Final = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+-R[0-9]+(\.[0-9]+)?$")
+"""The launcher's own version_pattern for ``.muse-version``."""
+
+
+def launcher_without_app(agent: AgentSpec, binary: str) -> bool:
+    """True when ``muse`` is only Meta's launcher script and the app it downloads (~456 MB) is not there.
+
+    The launcher keeps the app beside itself: ``.muse-version`` names the version and
+    ``muse-bin-<version>`` is the app. A download that died leaves the launcher alone.
+    """
+    if agent.name != "muse":
+        return False
+    folder = Path(binary).resolve().parent
+    try:
+        version = (folder / ".muse-version").read_text(encoding="utf-8").strip()
+    except OSError:
+        return True
+    app = folder / f"muse-bin-{version}"
+    return not (_MUSE_VERSION.match(version) and app.is_file() and os.access(app, os.X_OK))
+
+
+def _download_app(
+    prompt: Prompter, agent: AgentSpec, binary: str, run: Callable[[list[str]], int], offer: bool
+) -> bool:
+    """Muse's launcher without its app: offer the launcher's own download, and a retry. True when ready."""
+    ui.fail(f"{agent.label}: only the launcher is installed; the app (about 456 MB) has not downloaded yet.")
+    command = ["/usr/bin/env", "MUSE_LAUNCHER_INSTALL=1", binary]  # the launcher's own install mode
+    if not offer:
+        ui.note("Download it, then run setup again:")
+        ui.command(" ".join(command[1:]))
+        return False
+    question = f"Download the {agent.label} app now?"
+    while prompt.confirm(question) and not prompt.eof:  # input ended: never retry on a default
+        ui.note("Downloading with Muse's own launcher; its output follows.")
+        code = run(command)
+        if not launcher_without_app(agent, binary):
+            ui.ok(f"{agent.label} app downloaded")
+            return True
+        ui.fail(
+            f"The download did not finish (exit code {code})."
+            + (" The connection may have dropped." if code else "")
+        )
+        question = "Try the download again?"
+    ui.note("Pick another agent, or run setup again later.")
+    return False
+
+
 def _offer_install(
     prompt: Prompter,
     agent: AgentSpec,
     which: Callable[[str], str | None],
     run: Callable[[list[str]], int],
     offer: bool,
-) -> bool:
-    """Show the vendor's install command and, at a terminal, offer to run it. True once installed."""
+) -> str | None:
+    """Show the vendor's install command and, at a terminal, offer to run it. Its path once installed."""
     ui.fail(f"{agent.label} is not on this computer.")
     if not agent.install:
         ui.note(agent.install_hint)
         ui.note("Install it, or pick another agent.")
-        return False
+        return None
     ui.note(f"Official install command for {agent.label}:")
     ui.command(agent.install)
     if not offer:
         ui.note("Run it, then run setup again, or pick another agent.")
-        return False
+        return None
     missing = next((program for program in agent.install_needs if which(program) is None), None)
     if missing:
         ui.fail(f"The install command needs {missing}, which is not on this computer.")
         ui.note(_PREREQUISITE_HELP.get(missing, f"Install {missing} first."))
-        return False
+        return None
     if not prompt.confirm(f"Install {agent.label} now?"):
-        return False
+        return None
     ui.note("Running the installer here; its output follows.")
     code = run(["/bin/sh", "-c", agent.install])  # a fixed command from the agent registry, never user input
     if code != 0:
         ui.fail(f"The installer stopped with exit code {code}. Fix what it says, or pick another agent.")
-        return False
+        return None
     found = which(agent.binary)
     if found is None:
         off_path = _installed_off_path(agent.binary)
         if off_path is None:
             ui.fail(f"Installed, but `{agent.binary}` is not on your PATH yet.")
             ui.note("Open a new terminal window and run setup again.")
-            return False
+            return None
         folder = str(off_path.parent)
         os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
         ui.warn(f"`{agent.binary}` is in {folder}, which is not on your PATH. Add it to your shell profile:")
@@ -420,7 +468,7 @@ def _offer_install(
     if first_run and prompt.confirm(f"Sign in and set it up now ({' '.join(first_run)})?"):
         ui.note("Signing in is yours to do: follow the agent's own prompts.")
         run(first_run)
-    return True
+    return found
 
 
 def _pick_agent(
@@ -436,7 +484,11 @@ def _pick_agent(
     default = next((i for i, a in enumerate(agents) if a.name == last), installed[0] if installed else 0)
     labels = [a.label for a in agents] + ["Another command"]
     hints = [
-        "installed"
+        (
+            "launcher only; app not downloaded yet"
+            if launcher_without_app(a, which(a.binary) or "")
+            else "installed"
+        )
         if i in installed
         else ("not installed; setup can install it" if a.install else "not found")
         for i, a in enumerate(agents)
@@ -454,9 +506,14 @@ def _pick_agent(
                     raise SetupAbortedError("no agent command given") from exc
                 continue
         agent = agents[index]
-        if which(agent.binary) is None and not _offer_install(prompt, agent, which, run, offer):
+        found = which(agent.binary) or _offer_install(prompt, agent, which, run, offer)
+        if found is None:
             if prompt.eof:
                 raise SetupAbortedError(f"{agent.label} is not installed")
+            continue
+        if launcher_without_app(agent, found) and not _download_app(prompt, agent, found, run, offer):
+            if prompt.eof:
+                raise SetupAbortedError(f"{agent.label} has not finished downloading")
             continue
         return agent, ""
 
