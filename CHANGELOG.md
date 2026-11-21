@@ -4,6 +4,20 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.7] - Unreleased
+
+### Added
+
+- MIA, MeetStream's mascot, in the terminal: beside the title when setup
+  starts (she waves), when the bridge is running, and in `doctor` (her problem
+  face when something needs fixing). Terminals that show images (iTerm2,
+  WezTerm, kitty, Ghostty; not inside tmux) get the real picture; other colour
+  terminals get half-block art in true colour, or the 256-colour palette.
+  Without a terminal or with `NO_COLOR` she stays away;
+  `MEETSTREAM_AGENT_KIT_MASCOT=off|blocks|image` overrides. The art is
+  pre-rendered from the official mascot GIFs by `scripts/build_mascot.py`
+  (dev only) and adds no dependencies.
+
 ## [0.3.6] - Unreleased
 
 ### Fixed

@@ -26,7 +26,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
-from meetstream_agent_kit import __version__, checks, context, estimates, shared_estimates, ui, warm_check
+from meetstream_agent_kit import (
+    __version__,
+    checks,
+    context,
+    estimates,
+    mascot,
+    shared_estimates,
+    ui,
+    warm_check,
+)
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
 from meetstream_agent_kit.compare import DEFAULT_PARALLEL, Measured, chart_lines, compare
@@ -186,6 +195,21 @@ def _stop_on_signals() -> None:
             signal.signal(sig, _interrupt)
 
 
+def _title_lines(extra: Sequence[str]) -> list[str]:
+    return [
+        ui.paint("MeetStream Agent Kit", "orange", "bold") + "  " + ui.paint(f"v{__version__}", "dim"),
+        "",
+        *extra,
+    ]
+
+
+def _banner(state: str, extra: Sequence[str], *, animate: bool = False) -> None:
+    """MIA beside the title where the terminal can show her, else the plain header box."""
+    say("")
+    if not mascot.show(_title_lines(extra), state, animate=animate):
+        ui.header("MeetStream Agent Kit", __version__, TAGLINE)
+
+
 def _print_running(
     config: BridgeConfig,
     port: int,
@@ -200,6 +224,10 @@ def _print_running(
     mode = "warm session per meeting" if agent.warm else "one run per turn"
     login = login_state + (f" ({login_detail})" if login_detail and login_state != "ok" else "")
     say("")
+    mascot.show(
+        _title_lines([ui.paint("Bridge running", "bold"), ui.paint(f"{agent.label} answers for MIA", "dim")]),
+        "speaking",
+    )
     ui.box(
         f"MeetStream Agent Kit {__version__}",
         [
@@ -443,7 +471,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
     _fail_on(checks.check_home(home))
     prompt = Prompter()
     last = load_answers(home)
-    ui.header("MeetStream Agent Kit", __version__, TAGLINE)
+    _banner(
+        "idle",
+        [ui.paint(TAGLINE, "bold"), ui.paint("Your agent CLI → MIA → Google Meet · Zoom · Teams", "dim")],
+        animate=True,
+    )
     answers: SetupAnswers | None = None
     if last:
         say("")
@@ -571,10 +603,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if agent is not None:
         results.append(_context_check(agent, Path(args.workdir).expanduser().resolve(), args))
     results.append(checks.check_port(home, args.port))
-    say(f"MeetStream Agent Kit {__version__} doctor")
+    failed = [c for c in results if not c.ok]
+    verdict = "All good." if not failed else f"{len(failed)} problem(s) to fix, listed below."
+    if not mascot.show(
+        _title_lines([ui.paint("doctor", "bold"), ui.paint(verdict, "dim")]), "problem" if failed else "idle"
+    ):
+        say(f"MeetStream Agent Kit {__version__} doctor")
     for check in results:
         _print_check(check)
-    failed = [c for c in results if not c.ok]
     say("All good." if not failed else f"{len(failed)} problem(s) to fix.")
     return EXIT_FAILED if failed else EXIT_OK
 
