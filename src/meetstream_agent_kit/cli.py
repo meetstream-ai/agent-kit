@@ -15,6 +15,7 @@ import errno
 import json
 import os
 import re
+import secrets
 import shlex
 import signal
 import subprocess
@@ -33,11 +34,16 @@ from meetstream_agent_kit.compare import Measured, chart_lines, compare
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import DEFAULT_PORT, DEFAULT_TURN_TIMEOUT_S
+from meetstream_agent_kit.credentials import Credentials, CredentialStore
 from meetstream_agent_kit.login import LoginChecker
 from meetstream_agent_kit.models import catalog_for
+from meetstream_agent_kit.oauth_client import DEFAULT_AUTH_URL, DEFAULT_RELAY_URL, OAuthError
+from meetstream_agent_kit.oauth_client import login as oauth_login
+from meetstream_agent_kit.oauth_client import revoke as oauth_revoke
 from meetstream_agent_kit.oneshot import RunResult, build_oneshot_argv, run_once
 from meetstream_agent_kit.pairing import PairingError, PairingStore, default_home
 from meetstream_agent_kit.prompts import format_turn, system_prompt
+from meetstream_agent_kit.relay import RelayClient, StopRelayError, hello_frame
 from meetstream_agent_kit.server import BridgeServer
 from meetstream_agent_kit.session import MeetingSession
 from meetstream_agent_kit.setup import (
@@ -298,11 +304,151 @@ def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: s
     return EXIT_OK
 
 
+# MS-2366: sign in once, then MIA reaches this computer through the MeetStream relay ----------
+
+
+def _auth_url(args: argparse.Namespace) -> str:
+    return (
+        getattr(args, "auth_url", "") or os.environ.get("MEETSTREAM_AUTH_URL") or DEFAULT_AUTH_URL
+    ).rstrip("/")
+
+
+def _relay_url(args: argparse.Namespace) -> str:
+    return (
+        getattr(args, "relay_url", "") or os.environ.get("MEETSTREAM_RELAY_URL") or DEFAULT_RELAY_URL
+    ).strip()
+
+
+def cmd_login(args: argparse.Namespace) -> int:
+    if getattr(args, "device", False):
+        say("Sign-in with a code (for computers without a browser) is coming soon.")
+        return 2
+    store = CredentialStore()
+    auth_url = _auth_url(args)
+    relay_url = _relay_url(args)
+    try:
+        tokens = oauth_login(auth_url, say=say)
+    except OAuthError as exc:
+        raise CliError(f"sign-in failed: {exc}") from exc
+    store.save(
+        Credentials(
+            device_id=tokens.device_id,
+            refresh_token=tokens.refresh_token,
+            auth_url=auth_url,
+            relay_url=relay_url,
+            signed_in_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+    )
+    ui.ok(f"Signed in to MeetStream. This computer is {tokens.device_id} (saved in {store.where}).")
+    say(f"Next: {PROG} serve --relay   (no tunnel, nothing to paste)")
+    return EXIT_OK
+
+
+def cmd_logout(args: argparse.Namespace) -> int:
+    store = CredentialStore()
+    creds = store.load()
+    if creds is None:
+        say("Not signed in.")
+        return EXIT_OK
+    oauth_revoke(creds.auth_url, creds.refresh_token)
+    store.delete()
+    ui.ok("Signed out. This computer can no longer be used by MIA until you sign in again.")
+    return EXIT_OK
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    store = CredentialStore()
+    creds = store.load()
+    if creds is None:
+        say(f"Not signed in to MeetStream. Run: {PROG} login")
+        return EXIT_FAILED
+    say(f"Signed in: device {creds.device_id}, since {creds.signed_in_at or '?'}")
+    say(f"Sign-in server: {creds.auth_url}")
+    say(f"Relay:          {creds.relay_url}")
+    say(f"Stored in:      {store.where}")
+    return EXIT_OK
+
+
+def _run_bridge_relay(config: BridgeConfig, port: int, store: CredentialStore, creds: Credentials) -> int:
+    """Bridge on 127.0.0.1 + one outbound relay connection. No tunnel, no pairing token, no URL."""
+    home = default_home()
+    try:
+        server = BridgeServer(("127.0.0.1", port), config)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            _fail_on(checks.port_in_use_message(home, port))
+        raise CliError(f"cannot listen on 127.0.0.1:{port}: {exc.strerror}") from exc
+    server.internal_token = secrets.token_urlsafe(32)
+    _stop_on_signals()
+    runner = threading.Thread(target=server.serve_forever, daemon=True, name="bridge")
+    runner.start()
+    login = server.login.check(force=True)
+    client = RelayClient(
+        store,
+        creds,
+        server.port,
+        server.internal_token,
+        hello_frame(config.agent.name, config.agent.label, login.state, config.max_access),
+        say=say,
+    )
+    problem: list[str] = []
+
+    def relay_main() -> None:
+        try:
+            client.run_forever()
+        except StopRelayError as exc:
+            problem.append(str(exc))
+
+    relay_thread = threading.Thread(target=relay_main, daemon=True, name="relay")
+    lock: Path | None = None
+    try:
+        ui.box(
+            "MeetStream Agent Kit (relay)",
+            [
+                ("agent", f"{config.agent.label}" + (f", model {config.model}" if config.model else "")),
+                ("access", config.max_access),
+                ("computer", creds.device_id),
+                ("relay", creds.relay_url),
+                ("login", login.state),
+            ],
+        )
+        relay_thread.start()
+        lock = checks.write_lock(home, server.port)
+        say("")
+        say(f"{ui.paint('●', 'green')} Running. Leave this window open; Ctrl-C stops it.")
+        while runner.is_alive() and relay_thread.is_alive():
+            relay_thread.join(0.5)
+        if problem:
+            raise CliError(problem[0])
+    except KeyboardInterrupt:
+        say("\nstopped")
+    finally:
+        client.stop()
+        server.shutdown()
+        server.close_all()
+        server.server_close()
+        if lock is not None:
+            lock.unlink(missing_ok=True)
+    return EXIT_OK
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     home = default_home()
     _fail_on(checks.check_python())
     _fail_on(checks.check_home(home))
     config = _build_config(args, max_access=args.max_access)
+    if getattr(args, "relay", False) or (
+        args.tunnel == "none"
+        and CredentialStore().load() is not None
+        and not getattr(args, "no_relay", False)
+    ):
+        store = CredentialStore()
+        creds = store.load()
+        if creds is None:
+            raise CliError("not signed in to MeetStream", f"Run: {PROG} login")
+        if args.tunnel != "none":
+            raise CliError("--relay and --tunnel do not go together", "Pick one")
+        return _run_bridge_relay(config, args.port, store, creds)
     if not PairingStore(home).list():
         raise CliError("no pairing yet", f"Run: {PROG} pair --agent {config.agent.name}  (or just: {PROG})")
     return _run_bridge(config, args.port, _tunnel_spec(args))
@@ -777,7 +923,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="with --tunnel ngrok: your static domain; with --tunnel url: your https address",
     )
+    serve.add_argument(
+        "--relay",
+        action="store_true",
+        help="no tunnel: connect out to MeetStream with your sign-in (default once you have run login)",
+    )
+    serve.add_argument("--no-relay", action="store_true", help="self-hosted: do not use the relay")
     serve.set_defaults(func=cmd_serve)
+
+    login = sub.add_parser("login", help="sign in to MeetStream once (no tunnel or token to paste)")
+    login.add_argument("--device", action="store_true", help="sign in with a code (no browser here)")
+    login.add_argument("--auth-url", default="", help=argparse.SUPPRESS)
+    login.add_argument("--relay-url", default="", help=argparse.SUPPRESS)
+    login.set_defaults(func=cmd_login)
+    sub.add_parser("logout", help="sign this computer out of MeetStream").set_defaults(func=cmd_logout)
+    sub.add_parser("status", help="show the MeetStream sign-in of this computer").set_defaults(
+        func=cmd_status
+    )
 
     doctor = sub.add_parser("doctor", help="check this machine and show how to fix each problem")
     _agent_options(doctor)

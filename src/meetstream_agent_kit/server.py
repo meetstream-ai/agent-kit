@@ -70,6 +70,9 @@ class BridgeServer(ThreadingHTTPServer):
         self.login = login or LoginChecker(config.agent, config.binary)
         self.sessions: dict[str, MeetingSession] = {}
         self.sessions_lock = threading.Lock()
+        # Relay mode (MS-2366): a per-process secret for the relay client's
+        # loopback calls. Never saved, never printed. Empty = off (tunnel mode).
+        self.internal_token = ""
 
     @property
     def port(self) -> int:
@@ -200,6 +203,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _authorized(self) -> bool:
+        internal = self.server.internal_token
+        if internal and hmac.compare_digest(
+            (self.headers.get("Authorization") or "").encode(), f"Bearer {internal}".encode()
+        ):
+            return True  # relay mode: the request came over the signed-in relay connection
         try:
             pairing = self.server.pairings.verify(self.headers.get("Authorization"))
         except PairingError as exc:
