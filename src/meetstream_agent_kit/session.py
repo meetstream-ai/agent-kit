@@ -26,14 +26,22 @@ from typing import Any, Final
 
 from meetstream_agent_kit.access import AccessLevel
 from meetstream_agent_kit.activation import ActivationGate
+from meetstream_agent_kit.agents import split_provider
+from meetstream_agent_kit.alerts import TITLE
 from meetstream_agent_kit.config import BridgeConfig
+from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import (
     APPROVE_TOOL,
+    CANCEL_GRACE_S,
     MAX_ANSWER_CHARS,
     MCP_SECRET_ENV,
+    PREEMPT_WAIT_S,
+    TIMEOUT_REPLY,
     TOOL_RESULT_TIMEOUT_S,
 )
 from meetstream_agent_kit.drivers import Driver, make_driver
+from meetstream_agent_kit.local_apps import LOCAL_TOOLS, STOP_TOOL, LocalShares
+from meetstream_agent_kit.local_apps import TOOL_DEFS as LOCAL_TOOL_DEFS
 from meetstream_agent_kit.oneshot import RunResult, build_oneshot_argv, close_stream, run_once, stop_process
 from meetstream_agent_kit.parsers import classify_error
 from meetstream_agent_kit.prompts import system_prompt
@@ -79,6 +87,14 @@ class MeetingSession:
         self.activation: ActivationGate | None = None
         self.mcp_secret = secrets.token_urlsafe(24)
         self.started_turns = 0
+        self._warmup_running = False
+        self._restarted = threading.Event()
+        self._restarted.set()
+        """Clear while a cancel's restart is still to happen: the next turn must not reach the old process."""
+        self._alerted: set[str] = set()
+        self.local_apps = LocalShares(log=lambda text: None if config.quiet else say(text))
+        self.mcp_tools_listed: int | None = None
+        """How many meeting tools the agent loaded over MCP (None until it asks)."""
         self.proc: subprocess.Popen[str] | None = None
         self.spawn_ms: float | None = None
         self.ready = threading.Event()
@@ -108,8 +124,11 @@ class MeetingSession:
     def turn_running(self) -> bool:
         return self._turn_lock.locked()
 
-    def rules(self) -> str:
-        return system_prompt(self.config.owner, self.instructions)
+    def rules(self, access: AccessLevel | None = None) -> str:
+        """The agent's instructions, for the access level the agent really runs at."""
+        return system_prompt(
+            self.config.owner, self.instructions, access or self.access, self.config.meeting_notes
+        )
 
     def changed_fields(self, other: MeetingSession) -> list[str]:
         """Which parts of the meeting's setup differ from ``other`` (for the restart log line)."""
@@ -128,7 +147,31 @@ class MeetingSession:
         return hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()
 
     def tool_names(self) -> set[str]:
+        """MIA's meeting tools (calls go to MIA)."""
         return {t["name"] for t in self.tools}
+
+    @property
+    def local_tools_allowed(self) -> bool:
+        """share_local_app / stop_local_app: only when the agent may act on this computer."""
+        return self.access in ("full", "confirm")
+
+    def offered_tool_names(self) -> set[str]:
+        """Every meeting tool the agent sees, MIA's and the bridge's own."""
+        return self.tool_names() | (set(LOCAL_TOOLS) if self.local_tools_allowed else set())
+
+    def local_tool(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
+        """Run one of the bridge's own meeting tools here (not at MIA)."""
+        if not self.local_tools_allowed:
+            return "not allowed at this access level", True
+        if name == STOP_TOOL:
+            port = arguments.get("port")
+            return self.local_apps.stop(port if isinstance(port, int) else None)
+        port, path = arguments.get("port"), str(arguments.get("path") or "")
+        if self.access == "confirm" and not self.allow_action(
+            f"share localhost:{port} with the meeting through a temporary public address"
+        ):
+            return "the owner did not allow sharing that app", True
+        return self.local_apps.share(port if isinstance(port, int) else -1, path)
 
     def allow_action(self, description: str) -> bool:
         """May the agent run a shell command or change a file right now?"""
@@ -150,6 +193,24 @@ class MeetingSession:
 
     def is_current(self, proc: subprocess.Popen[str]) -> bool:
         return proc is self.proc
+
+    def log(self, text: str) -> None:
+        """One line in the bridge terminal (silent in tests)."""
+        if not self.config.quiet:
+            say(f"[session] {self.session_id}: {text}")
+
+    def alert_once(self, kind: str, text: str) -> bool:
+        """One desktop notification per kind of failure per meeting. True when it was sent now."""
+        if kind in self._alerted:
+            return False
+        self._alerted.add(kind)
+        self.config.notify(TITLE, text)
+        return True
+
+    def debug(self, text: str) -> None:
+        """A protocol trace line, only with ``--debug`` / ``MS_AGENT_KIT_DEBUG=1``."""
+        if self.config.debug:
+            say(f"[debug] {self.session_id}: {text}")
 
     def startup_error(self, default: str) -> str:
         """The error a failed start queued, or ``default``."""
@@ -196,9 +257,11 @@ class MeetingSession:
     def _spawn_env(self) -> dict[str, str]:
         env = dict(os.environ)
         env[MCP_SECRET_ENV] = self.mcp_secret
+        if self.config.ignore_rules:
+            env.update(dict(self.config.agent.ignore_rules_env))
         model_env = self.config.agent.model_env
         if self.model and model_env:
-            env[model_env] = self.model
+            env[model_env] = split_provider(self.model)[1]  # a provider:model id is set over ACP instead
         return env
 
     def restart(self, resume: bool = True) -> None:
@@ -209,7 +272,20 @@ class MeetingSession:
         if self.warm:
             self.start(resume=resume and self.started_turns > 0)
 
+    def restart_in_background(self) -> None:
+        """Restart after a cancel without blocking the caller; the next turn waits for it."""
+        self._restarted.clear()
+
+        def work() -> None:
+            try:
+                self.restart()
+            finally:
+                self._restarted.set()
+
+        threading.Thread(target=work, daemon=True, name="restart").start()
+
     def close(self) -> None:
+        self.local_apps.close_all()
         self._fail_pending("the meeting ended")
         with self._proc_lock:
             proc, self.proc = self.proc, None
@@ -220,11 +296,22 @@ class MeetingSession:
 
     # Turns --------------------------------------------------------------------
 
-    def run_turn(self, text: str) -> Iterator[Event]:
-        """Run one turn; yield its events."""
-        if not self._turn_lock.acquire(timeout=15):  # waits out the warm-up turn; never two at once
-            yield {"type": "error", "code": "busy", "message": "a turn is already running"}
-            return
+    def run_turn(self, text: str, *, warmup: bool = False) -> Iterator[Event]:
+        """Run one turn; yield its events. Never two at once.
+
+        MIA runs one turn at a time, so a turn that arrives while another runs
+        means MIA gave up on that one: it is stopped, not queued behind. The
+        warm-up turn at meeting start is waited out instead (up to 15 s).
+        """
+        if not self._turn_lock.acquire(timeout=PREEMPT_WAIT_S):
+            if not self._warmup_running:
+                self.log("a new turn arrived while the last one was still running: stopped the last one")
+                self.cancel()
+            if not self._turn_lock.acquire(timeout=15):
+                self.log("the last turn did not stop in 15 s: this turn was dropped")
+                yield {"type": "error", "code": "busy", "message": "a turn is already running"}
+                return
+        self._warmup_running = warmup
         try:
             self._cancel.clear()
             if self.driver is not None:
@@ -232,10 +319,16 @@ class MeetingSession:
             else:
                 yield from self._oneshot_turn(text)
         finally:
+            self._warmup_running = False
             self._turn_lock.release()
 
     def _warm_turn(self, driver: Driver, text: str) -> Iterator[Event]:
         t0 = time.monotonic()
+        # A cancel may still be replacing the process: writing to the old one would hand this turn
+        # the cancelled turn's tail (its last words and its end) and lose this turn's question.
+        if not self._restarted.wait(15):
+            yield _error("the agent is still restarting after the last cancel")
+            return
         if self.proc is None or self.proc.poll() is not None:
             self.start(resume=self.started_turns > 0)
         not_ready = driver.check_ready()
@@ -254,25 +347,25 @@ class MeetingSession:
         self.started_turns += 1
         first_ms: float | None = None
         chunks: list[str] = []
-        deadline = t0 + self.config.timeout_s
+        idle_limit = self.config.timeout_s
+        last_activity = t0
         while True:
             if self.cancelled:
                 yield _cancelled()
                 return
             try:
-                item = self.events.get(timeout=max(0.05, min(0.5, deadline - time.monotonic())))
+                wait = last_activity + idle_limit - time.monotonic()
+                item = self.events.get(timeout=max(0.05, min(0.5, wait)))
             except queue.Empty:
-                if time.monotonic() >= deadline:
-                    self.restart()
-                    yield {
-                        "type": "error",
-                        "code": "timeout",
-                        "message": f"no answer within {int(self.config.timeout_s)} s",
-                    }
+                if self.pending_tool_calls():
+                    last_activity = time.monotonic()  # waiting on MIA, not on the agent
+                elif time.monotonic() >= last_activity + idle_limit:
+                    yield from self._timed_out(driver, chunks, first_ms, t0)
                     return
                 continue
             if item is TURN_END:
                 break
+            last_activity = time.monotonic()
             kind, value = item
             if kind == "wake":  # cancel() woke the loop; the check at the top ends the turn
                 continue
@@ -305,12 +398,45 @@ class MeetingSession:
             "warm": True,
         }
 
+    def _timed_out(
+        self, driver: Driver, chunks: list[str], first_ms: float | None, t0: float
+    ) -> Iterator[Event]:
+        """No output for too long: ask the agent to stop, keep the session if it does, say so."""
+        self.log(f"no output for {int(self.config.timeout_s)} s: stopping the turn")
+        proc = self.proc
+        self.cancel()
+        if not self._wait_turn_end(CANCEL_GRACE_S, proc):
+            self.log("the agent did not stop the turn: restarting it (the conversation is kept)")
+            self.restart()
+        yield from _timeout_reply(chunks, first_ms, t0, warm=True)
+
+    def _wait_turn_end(self, timeout_s: float, proc: subprocess.Popen[str] | None) -> bool:
+        """After a cancel: wait for the agent to end its turn (or for the driver's own restart,
+        which is how stream-json agents stop). False if neither happens in time."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.proc is not proc:
+                return True
+            try:
+                item = self.events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is TURN_END or (isinstance(item, tuple) and item[0] in ("rpc_done", "error", "exit")):
+                return True
+        return False
+
     def _oneshot_turn(self, text: str) -> Iterator[Event]:
         cfg = self.config
         agent = cfg.agent
         access: AccessLevel = "full" if self.access == "full" else "readonly"
         argv, stdin_text = build_oneshot_argv(
-            agent, self.rules() + "\n\n" + text, access, cfg.binary, self.model, cfg.effort
+            agent,
+            self.rules(access) + "\n\n" + text,
+            access,
+            cfg.binary,
+            self.model,
+            cfg.effort,
+            cfg.ignore_rules,
         )
         deltas: queue.Queue[Any] = queue.Queue()
         box: dict[str, RunResult] = {}
@@ -339,6 +465,9 @@ class MeetingSession:
                 "total_ms": round(result.total_ms, 1),
                 "warm": False,
             }
+        elif result.error and "timed out" in result.error:
+            self.log(f"no answer within {int(cfg.timeout_s)} s: stopped the run")
+            yield from _timeout_reply([], None, time.monotonic() - result.total_ms / 1000, warm=False)
         else:
             yield _error(result.error or "the agent returned no answer")
 
@@ -395,6 +524,8 @@ class MeetingSession:
             }
             for t in self.tools
         ]
+        if self.local_tools_allowed:
+            tools += [dict(tool) for tool in LOCAL_TOOL_DEFS]
         if self.access == "confirm":
             tools.append(
                 {
@@ -415,6 +546,20 @@ def _drain(proc: subprocess.Popen[str]) -> None:
         for _ in proc.stderr:
             pass
         close_stream(proc.stderr)
+
+
+def _timeout_reply(chunks: list[str], first_ms: float | None, t0: float, *, warm: bool) -> Iterator[Event]:
+    """What MIA gets when a turn is stopped for taking too long: a short sentence to speak."""
+    said = "".join(chunks).strip()
+    yield {"type": "delta", "text": (" " if said else "") + TIMEOUT_REPLY}
+    yield {
+        "type": "done",
+        "text": f"{said} {TIMEOUT_REPLY}".strip(),
+        "timed_out": True,
+        "first_output_ms": None if first_ms is None else round(first_ms, 1),
+        "total_ms": round((time.monotonic() - t0) * 1000, 1),
+        "warm": warm,
+    }
 
 
 def _error(message: str) -> Event:

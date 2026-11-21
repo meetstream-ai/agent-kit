@@ -14,30 +14,47 @@ import argparse
 import errno
 import json
 import os
+import re
+import shlex
 import signal
+import subprocess
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
-from meetstream_agent_kit import __version__, checks
+from meetstream_agent_kit import __version__, checks, context, estimates, shared_estimates, ui, warm_check
 from meetstream_agent_kit.access import ACCESS_LEVELS
 from meetstream_agent_kit.agents import AGENTS, AgentSpec, custom_agent
+from meetstream_agent_kit.compare import Measured, chart_lines, compare
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import DEFAULT_PORT, DEFAULT_TURN_TIMEOUT_S
 from meetstream_agent_kit.login import LoginChecker
-from meetstream_agent_kit.oneshot import build_oneshot_argv, run_once
+from meetstream_agent_kit.models import catalog_for
+from meetstream_agent_kit.oneshot import RunResult, build_oneshot_argv, run_once
 from meetstream_agent_kit.pairing import PairingError, PairingStore, default_home
 from meetstream_agent_kit.prompts import format_turn, system_prompt
 from meetstream_agent_kit.server import BridgeServer
 from meetstream_agent_kit.session import MeetingSession
-from meetstream_agent_kit.setup import Prompter, SetupAnswers, ask_setup, load_answers, save_answers
+from meetstream_agent_kit.setup import (
+    SETUP_STEPS,
+    Prompter,
+    SetupAbortedError,
+    SetupAnswers,
+    ask_setup,
+    load_answers,
+    save_answers,
+)
 from meetstream_agent_kit.tunnel import TUNNEL_KINDS, Tunnel, TunnelError, TunnelSpec, make_spec
+from meetstream_agent_kit.usage import Assumptions
 
 PROG: Final = "meetstream-agent-kit"
+TAGLINE: Final = "Your own agent, live in your MeetStream meetings."
+TEST_TURN_TIMEOUT_S: Final = 120.0
 EXIT_OK: Final = 0
 EXIT_FAILED: Final = 1
 
@@ -98,6 +115,9 @@ def _build_config(args: argparse.Namespace, *, max_access: str = "readonly") -> 
         model=args.model or "",
         effort=args.effort or "",
         prime=not getattr(args, "no_prime", False),
+        ignore_rules=bool(getattr(args, "ignore_rules", False)),
+        meeting_notes="" if getattr(args, "no_meeting_md", False) else context.meeting_notes(),
+        debug=bool(getattr(args, "debug", False)) or os.environ.get("MS_AGENT_KIT_DEBUG") == "1",
     )
 
 
@@ -166,6 +186,78 @@ def _stop_on_signals() -> None:
             signal.signal(sig, _interrupt)
 
 
+def _print_running(
+    config: BridgeConfig,
+    port: int,
+    tunnel: TunnelSpec,
+    public_url: str,
+    token: str,
+    login_state: str,
+    login_detail: str,
+) -> None:
+    """What is running, then the two things to paste, each on its own line so it is easy to copy."""
+    agent = config.agent
+    mode = "warm session per meeting" if agent.warm else "one run per turn"
+    login = login_state + (f" ({login_detail})" if login_detail and login_state != "ok" else "")
+    say("")
+    ui.box(
+        f"MeetStream Agent Kit {__version__}",
+        [
+            ("agent", f"{agent.label} ({mode})"),
+            ("folder", ui.short_path(str(config.workdir))),
+            ("access", config.max_access),
+            ("model", config.model or "the CLI's default"),
+            ("effort", config.effort or "the CLI's default"),
+            (
+                "context",
+                context.summary(
+                    agent,
+                    config.workdir,
+                    ignore_rules=config.ignore_rules,
+                    use_meeting_md=bool(config.meeting_notes),
+                ),
+            ),
+            ("address", f"http://127.0.0.1:{port}"),
+            ("login", login),
+        ],
+    )
+    if login_state == "expired":
+        ui.fail(f"{agent.label} is signed out. Sign in again with:")
+        ui.command(agent.relogin)
+    if config.max_access == "full":
+        ui.warn("FULL access: the agent may run shell commands and change files without asking, but only in")
+        ui.note(
+            "meetings where only you (by verified id or activation code) can talk to it; otherwise it asks."
+        )
+    if agent.warm is None:
+        ui.warn("A custom command runs with your own permissions; the bridge cannot limit it.")
+    if not (token or public_url):
+        say("")
+        ui.note("Point your tunnel at it, for example:")
+        ui.command(f"cloudflared tunnel --url http://127.0.0.1:{port}")
+    else:
+        say("")
+        say(ui.paint("Next: paste these in the MeetStream dashboard", "bold"))
+        number = 1
+        if token:
+            say(
+                f"  {number}. Pairing token  "
+                + ui.paint("Integrations > Models > Local agent (shown once)", "dim")
+            )
+            say(f"     {ui.paint(token, 'green', 'bold')}")
+            number += 1
+        if public_url:
+            say(f"  {number}. Bridge URL     {ui.paint('Agents > your agent > Model > Your agent', 'dim')}")
+            say(f"     {ui.paint(public_url, 'cyan', 'bold')}")
+            if tunnel.kind == "cloudflare" or (tunnel.kind == "ngrok" and not tunnel.url):
+                ui.note(
+                    "This address changes each time the tunnel starts; update the Bridge URL when it does."
+                )
+    stops = " and the tunnel." if public_url and tunnel.kind != "url" else "."
+    say("")
+    say(f"{ui.paint('●', 'green')} Running. Leave this window open; Ctrl-C stops the bridge{stops}")
+
+
 def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: str = "") -> int:
     """Start the bridge (and its tunnel), print what to paste in the dashboard, serve until Ctrl-C."""
     home = default_home()
@@ -175,54 +267,21 @@ def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: s
         if exc.errno == errno.EADDRINUSE:
             _fail_on(checks.port_in_use_message(home, port))
         raise CliError(f"cannot listen on 127.0.0.1:{port}: {exc.strerror}") from exc
-    lock = checks.write_lock(home, server.port)
+    lock: Path | None = None
     _stop_on_signals()
     runner = threading.Thread(target=server.serve_forever, daemon=True, name="bridge")
     runner.start()
     tun = Tunnel(tunnel, server.port)
     try:
         if tunnel.kind != "none":
-            say(f"Opening the tunnel ({tunnel.kind})...")
+            ui.note(f"Opening the tunnel ({tunnel.kind})...")
         public_url = tun.start()
         login = server.login.check(force=True)
-        agent = config.agent
-        mode = "warm session per meeting" if agent.warm else "one run per turn"
-        say(f"\nMeetStream Agent Kit {__version__}: {agent.label} ({mode}), max access {config.max_access}")
-        say(f"  folder:  {config.workdir}")
-        say(f"  address: http://127.0.0.1:{server.port}")
-        say(
-            f"  login:   {login.state}"
-            + (f" ({login.detail})" if login.detail and login.state != "ok" else "")
-        )
-        if login.state == "expired":
-            say(f"           sign in again with: {agent.relogin}")
-        if config.max_access == "full":
-            say(
-                "  FULL access: the agent may run shell commands and change files without asking, but only in"
-            )
-            say(
-                "  meetings where only you (by verified id or activation code) can talk to it;"
-                " otherwise it asks."
-            )
-        if agent.warm is None:
-            say("  note: a custom command runs with your own permissions; the bridge cannot limit it.")
-        say("")
-        if token or public_url:
-            say("Paste these in the MeetStream dashboard:")
-        if token:
-            say(f"  Pairing token  (Integrations > Models > Local agent, shown once):  {token}")
-        if public_url:
-            say(f"  Bridge URL     (Agents > your agent > Model > Your agent):          {public_url}")
-            if tunnel.kind == "cloudflare" or (tunnel.kind == "ngrok" and not tunnel.url):
-                say("  This address changes each time the tunnel starts; update the Bridge URL when it does.")
-        else:
-            say(
-                f"Point your tunnel at it, for example:  cloudflared tunnel --url http://127.0.0.1:{server.port}"
-            )
-        say(
-            "\nRunning. Leave this window open; Ctrl-C stops the bridge"
-            + (" and the tunnel." if public_url and tunnel.kind != "url" else ".")
-        )
+        _print_running(config, server.port, tunnel, public_url, token, login.state, login.detail)
+        sys.stdout.flush()
+        # The run file says "ready": written only once everything above is printed, so whoever
+        # waits for it (a script, a test, a second `serve`) never stops the bridge mid-start-up.
+        lock = checks.write_lock(home, server.port)
         while runner.is_alive():
             runner.join(0.5)
     except KeyboardInterrupt:
@@ -234,7 +293,8 @@ def _run_bridge(config: BridgeConfig, port: int, tunnel: TunnelSpec, *, token: s
         server.shutdown()
         server.close_all()
         server.server_close()
-        lock.unlink(missing_ok=True)
+        if lock is not None:
+            lock.unlink(missing_ok=True)
     return EXIT_OK
 
 
@@ -248,9 +308,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return _run_bridge(config, args.port, _tunnel_spec(args))
 
 
-def _test_turn(config: BridgeConfig) -> bool:
+def _test_turn(config: BridgeConfig) -> RunResult:
     """One read-only turn, so a broken login or CLI shows up now and not in the meeting."""
-    say(f"\nTesting {config.agent.label} with one short turn...")
     turn = format_turn([{"speaker": config.owner, "text": "Reply with the single word: ready"}])
     argv, stdin_text = build_oneshot_argv(
         config.agent,
@@ -259,15 +318,106 @@ def _test_turn(config: BridgeConfig) -> bool:
         config.binary,
         config.model,
         config.effort,
+        config.ignore_rules,
     )
-    result = run_once(config.agent, argv, stdin_text, str(config.workdir), min(config.timeout_s, 120.0))
-    if result.error or not result.answer.strip():
-        say(f"  It did not answer: {result.error or 'empty reply'}")
-        if config.agent.relogin:
-            say(f"  If it is signed out, run: {config.agent.relogin}")
-        return False
-    say(f"  It answered in {result.total_ms / 1000:.1f} s: {result.answer.strip()[:80]}")
-    return True
+    timeout = min(config.timeout_s, TEST_TURN_TIMEOUT_S)
+    with ui.Stages.cold(config.agent.label) as stages:
+        result = run_once(
+            config.agent, argv, stdin_text, str(config.workdir), timeout, on_stage=stages.on_stage
+        )
+        problem = checks.diagnose_turn(config.agent, result.answer, result.error, result.stderr_tail, timeout)
+        if problem is not None:
+            stages.fail("failed", result.total_ms)
+        else:
+            stages.reach(2, result.total_ms)
+            estimates.save(
+                config.agent.name,
+                config.model,
+                Measured(
+                    config.model, result.usage, result.total_ms / 1000, first_output_ms=result.first_output_ms
+                ),
+            )
+        return result
+
+
+def _check_agent(
+    prompt: Prompter,
+    config: BridgeConfig,
+    *,
+    turn: Callable[[BridgeConfig], RunResult] = _test_turn,
+    run: Callable[[list[str]], int] = lambda argv: subprocess.call(argv),
+) -> str:
+    """Test turn until it answers or the user decides: "ok", "anyway" or "quit"."""
+    agent = config.agent
+    timeout = min(config.timeout_s, TEST_TURN_TIMEOUT_S)
+    while True:
+        result = turn(config)
+        problem = checks.diagnose_turn(agent, result.answer, result.error, result.stderr_tail, timeout)
+        if problem is None:
+            ui.ok(f"{agent.label} answered in {result.total_ms / 1000:.1f} s: {result.answer.strip()[:80]}")
+            return "ok"
+        ui.fail(problem.message)
+        for line in problem.detail.splitlines()[-4:]:
+            ui.note(f"│ {line[:200]}")
+        ui.note(f"Fix: {problem.fix}")
+        login = checks.login_argv(agent) if problem.kind != "not_installed" else None
+        actions: list[tuple[str, str]] = []
+        if login:
+            actions.append(("login", f"Sign in now ({' '.join(login)}), then test again"))
+        actions += [
+            ("retry", "Test again"),
+            ("anyway", "Start anyway (MIA cannot use your agent until it answers)"),
+            ("quit", "Quit"),
+        ]
+        default = 0 if problem.kind in ("signed_out", "empty", "failed") or not login else 1
+        pick = actions[prompt.choose("What now?", [label for _, label in actions], default)][0]
+        if prompt.eof:
+            return "quit"  # input ended: never loop on a default answer
+        if pick == "login" and login:
+            ui.note(f"Running {' '.join(login)}. Finish signing in there; this test runs again after.")
+            run(login)
+        elif pick in ("anyway", "quit"):
+            return pick
+
+
+def _check_warm_mode(
+    prompt: Prompter,
+    config: BridgeConfig,
+    *,
+    check: Callable[..., warm_check.WarmCheck] = warm_check.check_warm,
+) -> str:
+    """ACP agents run a different command in meetings: test that one too. "ok", "anyway" or "quit"."""
+    if not warm_check.applies_to(config):
+        return "ok"
+    while True:
+        labels = [(f"Starting {config.agent.label} (ACP)", "Session ready")]
+        events = ["ready"]
+        if config.agent.acp_mcp:
+            labels.append(("Calling a meeting tool", "Tool called"))
+            events.append("tool_call")
+        labels.append(("Answering", "Answered"))
+        with ui.Stages(labels, events=events) as stages:
+            result = check(config, turn=True, on_stage=stages.on_stage)
+            if result.ok:
+                stages.reach(len(labels) - 1, result.total_ms)
+            else:
+                stages.fail("failed", result.total_ms)
+        if result.ok:
+            ui.ok(f"{result.message} ({result.total_ms / 1000:.1f} s)")
+            return "ok"
+        ui.fail(f"Warm mode (ACP): {result.message}")
+        if result.fix:
+            ui.note(f"Fix: {result.fix}")
+        actions = [
+            ("retry", "Test again"),
+            ("anyway", "Start anyway (meetings may fail or have no meeting tools)"),
+            ("quit", "Quit"),
+        ]
+        pick = actions[prompt.choose("What now?", [label for _, label in actions], 0)][0]
+        if prompt.eof:
+            return "quit"  # input ended: never loop on a default answer
+        if pick != "retry":
+            return pick
 
 
 def _setup_namespace(answers: SetupAnswers) -> argparse.Namespace:
@@ -278,9 +428,11 @@ def _setup_namespace(answers: SetupAnswers) -> argparse.Namespace:
         workdir=answers.workdir,
         owner=answers.owner or "the user",
         timeout=DEFAULT_TURN_TIMEOUT_S,
-        model=None,
-        effort=None,
+        model=answers.model or None,
+        effort=answers.effort or None,
         no_prime=False,
+        ignore_rules=answers.ignore_rules == "yes",
+        no_meeting_md=answers.meeting_md == "no",
     )
 
 
@@ -291,26 +443,32 @@ def cmd_setup(args: argparse.Namespace) -> int:
     _fail_on(checks.check_home(home))
     prompt = Prompter()
     last = load_answers(home)
-    say(f"MeetStream Agent Kit {__version__}: your own agent, live in MeetStream meetings.")
+    ui.header("MeetStream Agent Kit", __version__, TAGLINE)
     answers: SetupAnswers | None = None
-    if last and prompt.confirm(f"\nLast setup: {last.describe()}.\nStart with it?"):
-        answers = last
+    if last:
+        say("")
+        ui.box("Last setup", last.rows())
+        if prompt.confirm("Start with it?"):
+            answers = last
     if answers is None:
         answers = ask_setup(prompt, last)
         save_answers(home, answers)
     config = _build_config(_setup_namespace(answers), max_access=answers.max_access)
-    tested = getattr(args, "no_test", False) or _test_turn(config)
-    if not tested and not prompt.confirm("Start anyway?", default=False):
+    ui.step(SETUP_STEPS, SETUP_STEPS, "Test")
+    if getattr(args, "no_test", False):
+        ui.note("Skipped (--no-test).")
+    elif _check_agent(prompt, config) == "quit" or _check_warm_mode(prompt, config) == "quit":
+        say(f"Saved your answers. Run `{PROG}` again when the agent is ready.")
         return EXIT_FAILED
     store = PairingStore(home)
     token = ""
     pairings = store.list()
     keep = bool(pairings) and prompt.confirm(
-        f"\nKeep using your pairing {pairings[-1].id} ({pairings[-1].label}), already saved in the dashboard?"
+        f"Keep using your pairing {pairings[-1].id} ({pairings[-1].label}), already saved in the dashboard?"
     )
     if not keep:
         _pairing, token = store.create("custom agent" if answers.command else answers.agent)
-    if not prompt.confirm("\nStart now?"):
+    if not prompt.confirm("Start now?"):
         say(
             f"Saved. Run `{PROG}` any time to start."
             + (f"\nYour new pairing token (shown once): {token}" if token else "")
@@ -322,6 +480,63 @@ def cmd_setup(args: argparse.Namespace) -> int:
         make_spec(answers.tunnel, answers.tunnel_url),
         token=token,
     )
+
+
+def _doctor_config(args: argparse.Namespace, agent: AgentSpec, binary: str) -> BridgeConfig:
+    workdir = Path(args.workdir).expanduser().resolve()
+    return BridgeConfig(
+        agent=agent,
+        binary=binary,
+        workdir=workdir if workdir.is_dir() else Path.home(),
+        owner=args.owner,
+        model=args.model or "",
+        quiet=True,
+    )
+
+
+CONTEXT_WARN_TOKENS: Final = 4000
+
+
+def _context_check(agent: AgentSpec, workdir: Path, args: argparse.Namespace) -> checks.Check:
+    """What the agent reads on every meeting turn; a heavy context is a slower, costlier meeting."""
+    ignore = bool(getattr(args, "ignore_rules", False))
+    items = context.effective_context(agent, workdir, ignore_rules=ignore)
+    tokens = context.tokens_per_turn(items)
+    label = context.summary(agent, workdir, ignore_rules=ignore)
+    heavy = tokens > CONTEXT_WARN_TOKENS
+    fix = f"Use {context.meeting_workspace()} as the folder, or --ignore-rules. See: {PROG} context show"
+    return checks.Check("context", not heavy, f"{label} ({len(items)} file(s))", fix if heavy else "")
+
+
+def _context_args(args: argparse.Namespace) -> tuple[AgentSpec, Path, bool, bool]:
+    """Agent, folder and context choices: from the command line, else the saved setup."""
+    saved = load_answers(default_home())
+    name = args.agent or (saved.agent if saved else "claude")
+    agent = AGENTS.get(name) or custom_agent(saved.command if saved and saved.command else name)
+    workdir = Path(args.workdir or (saved.workdir if saved else Path.cwd())).expanduser().resolve()
+    ignore = args.ignore_rules or bool(saved and saved.ignore_rules == "yes")
+    use_md = not (saved and saved.meeting_md == "no")
+    return agent, workdir, ignore, use_md
+
+
+def cmd_context(args: argparse.Namespace) -> int:
+    """``context show``: what the agent reads in meetings. ``context edit``: your MEETING.md."""
+    if args.action == "edit":
+        path = context.ensure_meeting_file()
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+        if not ui.is_interactive():
+            say(str(path))
+            return EXIT_OK
+        say(f"Opening {path} with {editor}. Keep it short: it is read on every meeting turn.")
+        return EXIT_OK if subprocess.call([*shlex.split(editor), str(path)]) == 0 else EXIT_FAILED
+    agent, workdir, ignore, use_md = _context_args(args)
+    items = context.effective_context(agent, workdir, ignore_rules=ignore, use_meeting_md=use_md)
+    label = context.summary(agent, workdir, ignore_rules=ignore, use_meeting_md=use_md)
+    say(f"{agent.label} in {ui.short_path(str(workdir))}: {label}")
+    for row in context.table(items):
+        say(f"  {row}")
+    say(f"Edit your meeting instructions with: {PROG} context edit  ({context.meeting_file()})")
+    return EXIT_OK
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -341,6 +556,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             ok = status.state in ("ok", "unknown")
             message = f"{agent.label} {status.state}" + (f" ({status.detail})" if status.detail else "")
             results.append(checks.Check("login", ok, message, "" if ok else f"Run: {agent.relogin}"))
+            if ok and agent.warm == "acp" and not args.no_warm:
+                warm = warm_check.check_warm(_doctor_config(args, agent, binary), turn=False)
+                results.append(checks.Check("warm", warm.ok, warm.message, warm.fix))
     try:
         count = len(PairingStore(home).list())
         results.append(
@@ -350,6 +568,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         )
     except PairingError as exc:
         results.append(checks.Check("pairing", False, str(exc)))
+    if agent is not None:
+        results.append(_context_check(agent, Path(args.workdir).expanduser().resolve(), args))
     results.append(checks.check_port(home, args.port))
     say(f"MeetStream Agent Kit {__version__} doctor")
     for check in results:
@@ -359,8 +579,40 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return EXIT_FAILED if failed else EXIT_OK
 
 
+def cmd_bench_compare(args: argparse.Namespace) -> int:
+    """Token use per model, one short real turn each, projected to an hour of meeting."""
+    config = _build_config(args)
+    models = [m.strip() for m in (args.models or "").split(",") if m.strip()]
+    if not models:
+        with ui.spinner(f"Asking {config.agent.label} which models it offers"):
+            listed = catalog_for(config.agent, config.binary)
+        default = config.model or listed.default_model
+        ids = [m.id for m in listed.models]
+        models = ([default] if default else []) + [m for m in ids if m != default]
+        models = models[: args.max_models] or [""]
+    names = ", ".join(m or "default" for m in models)
+    say(f"Comparing {len(models)} model(s) of {config.agent.label}: {names}")
+    results = compare(config, models, config.effort)
+    assumptions = Assumptions(turns_per_hour=args.turns_per_hour)
+    say("")
+    for line in chart_lines(results, assumptions, selected=config.model):
+        say(line)
+    if args.export:
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        entries = [
+            shared_estimates.entry(config.agent.name, r.model, r.usage, r.first_output_ms, stamp)
+            for r in results
+            if r.usage and not r.error
+        ]
+        total = shared_estimates.export(Path(args.export), entries)
+        say(f"\nWrote {len(entries)} measurement(s) to {args.export} ({total} model(s) in the file).")
+    return EXIT_OK if any(r.usage for r in results) else EXIT_FAILED
+
+
 def cmd_bench(args: argparse.Namespace) -> int:
     """Cold (one process per turn) vs warm (one long-lived session) timings."""
+    if getattr(args, "compare", False):
+        return cmd_bench_compare(args)
     config = _build_config(args)
     turn = format_turn([{"speaker": args.owner, "text": args.request}])
     rows: list[dict[str, object]] = []
@@ -372,11 +624,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
             config.binary,
             config.model,
             config.effort,
+            config.ignore_rules,
         )
         result = run_once(config.agent, argv, stdin_text, str(config.workdir), config.timeout_s)
         rows.append(
             {
                 "kind": "cold",
+                "first_line_ms": None if result.first_line_ms is None else round(result.first_line_ms, 1),
                 "first_output_ms": None
                 if result.first_output_ms is None
                 else round(result.first_output_ms, 1),
@@ -392,6 +646,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         rows.append(
             {
                 "kind": "warm_start",
+                "driver": config.agent.warm,
                 "spawn_ms": round(session.spawn_ms or 0, 1),
                 "ready_ms": round((time.monotonic() - t0) * 1000, 1),
             }
@@ -422,6 +677,12 @@ def cmd_mcp_stdio(args: argparse.Namespace) -> int:
 # ── Parser ────────────────────────────────────────────────────────────────────
 
 
+def _effort_level(value: str) -> str:
+    if not re.fullmatch(r"[a-z]{2,12}", value):
+        raise argparse.ArgumentTypeError(f"{value!r} is not an effort level (for example: low, medium, high)")
+    return value
+
+
 def _agent_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--agent", default="claude", help=f"agent CLI: {', '.join(sorted(AGENTS))} (default: claude)"
@@ -436,14 +697,19 @@ def _agent_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--owner", default=os.environ.get("USER", "the user"), help="your name, as MIA hears it"
     )
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TURN_TIMEOUT_S, help="seconds per turn")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TURN_TIMEOUT_S,
+        help=f"stop a turn after this many seconds with no output (default: {DEFAULT_TURN_TIMEOUT_S:.0f})",
+    )
     parser.add_argument(
         "--model", help="model flag for the CLI (e.g. haiku); MIA's agent config can override"
     )
     parser.add_argument(
         "--effort",
-        choices=["minimal", "low", "medium", "high"],
-        help="reasoning effort, where the CLI supports it",
+        type=_effort_level,
+        help="reasoning effort, where the CLI supports it (for example low, medium, high, xhigh, max)",
     )
 
 
@@ -485,6 +751,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument("--no-prime", action="store_true", help="skip the warm-up turn at meeting start")
     serve.add_argument(
+        "--no-meeting-md",
+        action="store_true",
+        help="leave your MEETING.md out of meetings (see: meetstream-agent-kit context show)",
+    )
+    serve.add_argument(
+        "--ignore-rules",
+        action="store_true",
+        help="skip the work folder's project rules (CLAUDE.md, AGENTS.md...) where the agent CLI can",
+    )
+    serve.add_argument(
+        "--debug",
+        action="store_true",
+        help="log every message type the agent sends (ACP), never their text; also MS_AGENT_KIT_DEBUG=1",
+    )
+    serve.add_argument(
         "--tunnel",
         choices=list(TUNNEL_KINDS),
         default="none",
@@ -501,13 +782,38 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor", help="check this machine and show how to fix each problem")
     _agent_options(doctor)
     doctor.add_argument("--port", type=int, default=DEFAULT_PORT)
+    doctor.add_argument("--no-warm", action="store_true", help="skip starting the agent's warm (ACP) session")
     doctor.set_defaults(func=cmd_doctor)
 
     bench = sub.add_parser("bench", help="time cold vs warm turns for your agent")
     _agent_options(bench)
     bench.add_argument("request", nargs="?", default="Reply with one short sentence: what is 2 + 2?")
     bench.add_argument("--repeat", type=int, default=3)
+    bench.add_argument(
+        "--compare",
+        action="store_true",
+        help="compare models by estimated tokens per hour of meeting (one short real turn each), as a chart",
+    )
+    bench.add_argument(
+        "--export",
+        metavar="FILE",
+        help="with --compare: write or merge MeetStream's shared model-estimates.json (nothing is uploaded)",
+    )
+    bench.add_argument("--models", help="with --compare: comma-separated model ids (default: the CLI's list)")
+    bench.add_argument(
+        "--max-models", type=int, default=4, help="with --compare: at most this many (default 4)"
+    )
+    bench.add_argument(
+        "--turns-per-hour", type=int, default=20, help="with --compare: answered turns per hour (default 20)"
+    )
     bench.set_defaults(func=cmd_bench)
+
+    ctx = sub.add_parser("context", help="what your agent reads in meetings; edit your MEETING.md")
+    ctx.add_argument("action", choices=["show", "edit"], nargs="?", default="show")
+    ctx.add_argument("--agent", help="agent (default: your saved setup)")
+    ctx.add_argument("--workdir", help="folder (default: your saved setup)")
+    ctx.add_argument("--ignore-rules", action="store_true", help="as with serve --ignore-rules")
+    ctx.set_defaults(func=cmd_context)
 
     shim = sub.add_parser("mcp-stdio", help=argparse.SUPPRESS)
     shim.add_argument("--url", required=True)
@@ -533,6 +839,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_FAILED
     except PairingError as exc:
         say(f"error: {exc}", err=True)
+        return EXIT_FAILED
+    except SetupAbortedError as exc:
+        say(f"error: setup stopped: {exc}", err=True)
         return EXIT_FAILED
     except KeyboardInterrupt:
         return 130

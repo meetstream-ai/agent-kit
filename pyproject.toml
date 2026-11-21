@@ -35,6 +35,7 @@ dependencies = []
 Homepage = "https://meetstream.ai"
 Source = "https://github.com/meetstream-ai/agent-kit"
 Issues = "https://github.com/meetstream-ai/agent-kit/issues"
+Documentation = "https://github.com/meetstream-ai/agent-kit#readme"
 Changelog = "https://github.com/meetstream-ai/agent-kit/blob/main/CHANGELOG.md"
 
 [project.scripts]

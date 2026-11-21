@@ -81,12 +81,21 @@ def parse_codex(line: str) -> ParsedLine:
     return _NOTHING
 
 
+_AGY_FAILED: Final = frozenset(
+    {"error", "failed", "failure", "canceled", "cancelled", "interrupted", "invalid"}
+)
+
+
 def parse_agy(line: str) -> ParsedLine:
-    """Antigravity ``--output-format stream-json``."""
+    """Antigravity ``--output-format stream-json``.
+
+    Each line names its kind in ``event`` (``init``, ``step_update``, ``result``), with
+    the payload under the same key. ``type`` is accepted too, as earlier builds read it.
+    """
     event = _json_object(line)
     if event is None:
         return _NOTHING
-    kind = event.get("type")
+    kind = event.get("event") or event.get("type")
     if kind == "step_update":
         step = event.get("step_update") or event
         if step.get("step_type") == "agent_response" and step.get("text_delta"):
@@ -95,7 +104,7 @@ def parse_agy(line: str) -> ParsedLine:
     if kind == "result":
         raw = event.get("result")
         result: dict[str, Any] = raw if isinstance(raw, dict) else event
-        if str(result.get("status") or "").lower() in ("error", "failed", "failure"):
+        if str(result.get("status") or "").lower() in _AGY_FAILED:
             return ParsedLine(error=str(result.get("error") or result.get("response") or "agent error"))
         return ParsedLine(final=str(result.get("response") or ""))
     return _NOTHING

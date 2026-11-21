@@ -36,9 +36,22 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """An empty bridge home per test; no desktop notifications."""
     path = tmp_path / "home"
     monkeypatch.setenv("MEETSTREAM_AGENT_KIT_HOME", str(path))
+    monkeypatch.setenv("MEETSTREAM_AGENT_KIT_WORKSPACE", str(tmp_path / "MeetStream Agent"))
+
+    def offline(_url: str, _timeout: float) -> bytes:
+        raise OSError("tests never reach the network")
+
+    monkeypatch.setattr("meetstream_agent_kit.shared_estimates._fetch", offline)
     monkeypatch.setenv("MIA_BRIDGE_HOME", str(tmp_path / "legacy"))
     monkeypatch.setattr("meetstream_agent_kit.console.shutil.which", lambda name: None)
-    for name in ("STUB_AUTH_FAIL", "STUB_FIRST_S", "STUB_TOTAL_S", "STUB_STARTUP_S"):
+    for name in (
+        "STUB_AUTH_FAIL",
+        "STUB_FIRST_S",
+        "STUB_TOTAL_S",
+        "STUB_STARTUP_S",
+        "STUB_NO_TOOLS",
+        "STUB_MCP_AT_START",
+    ):
         monkeypatch.delenv(name, raising=False)
     STUB.chmod(0o755)
     return path

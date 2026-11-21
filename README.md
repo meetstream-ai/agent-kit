@@ -112,21 +112,38 @@ uv tool install meetstream-agent-kit
 meetstream-agent-kit
 ```
 
-It asks a few questions: which agent should answer (it lists the ones it finds
-on your computer and checks they are signed in), the folder it works in, the
-most access this computer allows, and how MeetStream reaches your computer:
+It walks you through seven short steps, with arrow-key menus: which agent should
+answer (it lists the ones it finds on your computer and checks they are signed
+in; pick one that is missing and it shows the vendor's official install command
+and offers to run it), which model and effort it uses (listed by the CLI itself,
+each with an estimated tokens-per-hour bar, what it can do in a meeting, and a
+"Measure live" option that runs one short turn per model), the folder
+it works in, the most access this computer allows, how
+MeetStream reaches your computer, and your name. Then it tests your agent.
 
 - **Cloudflare quick tunnel:** no account needed. The address changes each time it starts.
-- **ngrok:** needs a free ngrok account. A free static domain keeps one address.
+- **ngrok:** needs a free ngrok account. Setup reads your ngrok config, so it
+  knows whether ngrok is connected to your account and which domain you use,
+  and tells you the one command to run when it is not.
+  A static domain (free accounts get one, under **Domains** in the ngrok
+  dashboard) keeps one address.
 - **An address you already have**, for example a named Cloudflare tunnel.
 
-It then runs one short test turn with your agent and asks **Start now?** On yes,
-it starts the bridge and the tunnel and prints the two things to paste:
+The last step runs one short test turn with your agent. For agents that run
+over ACP in meetings (Antigravity, Hermes, Copilot, Muse, OpenClaw) it also
+starts that warm session the way a meeting does and has your agent call a test
+meeting tool, so a problem shows up now and not in the meeting. If it does not answer,
+setup says why (not installed, signed out, timed out, or an empty reply, with
+what the CLI printed), offers to run the sign-in command and tests again. Then
+it asks **Start now?** On yes, it starts the bridge and the tunnel and prints
+the two things to paste, each on its own line:
 
 ```text
-Paste these in the MeetStream dashboard:
-  Pairing token  (Integrations > Models > Local agent, shown once):  msak_…
-  Bridge URL     (Agents > your agent > Model > Your agent):          https://….trycloudflare.com
+Next: paste these in the MeetStream dashboard
+  1. Pairing token  Integrations > Models > Local agent (shown once)
+     msak_…
+  2. Bridge URL     Agents > your agent > Model > Your agent
+     https://….trycloudflare.com
 ```
 
 Next time, run `meetstream-agent-kit` and press Enter to start with the same answers.
@@ -242,7 +259,7 @@ audit, and nothing else is installed.
 | GitHub Copilot CLI | `copilot` | yes (ACP) | yes | `copilot login` |
 | Muse Code | `muse` | yes (ACP) | yes | sign in when `muse` asks |
 | OpenClaw | `openclaw` | yes (ACP) | text only | `openclaw models auth login` |
-| Antigravity CLI | `agy` | yes | text only | `agy acp --login` |
+| Antigravity CLI | `agy` | yes (ACP) | yes | `agy acp --login` |
 | Any other CLI | `--command '...'` | one run per turn | text only | |
 
 A warm session keeps one agent process for the whole meeting, so answers start
@@ -257,9 +274,12 @@ same for every agent; the bridge maps each one to that agent's own controls.
 
 | Level | Your agent may | Claude Code | Codex | ACP agents |
 |---|---|---|---|---|
-| **Read-only** (default) | read and search the work folder | Read, Grep, Glob only | read-only sandbox | permission requests denied |
-| **Ask me first** (`confirm`) | act after you answer y/N in the bridge terminal; no answer in 20 s means no | asks per tool | on-request approvals | permission requests asked |
-| **Full** | act without asking | edits and shell | workspace-write sandbox | permission requests allowed |
+| **Meeting only** (`readonly`, default) | be a meeting companion: act in the meeting, read and search the work folder, change nothing on your computer | Read, Grep, Glob only | read-only sandbox | permission requests denied |
+| **Ask first** (`confirm`) | do anything on your computer after you answer y/N in the bridge terminal; no answer in 20 s means no | asks per tool | on-request approvals | permission requests asked |
+| **Full** | do anything on your computer without asking | edits and shell | workspace-write sandbox | permission requests allowed |
+
+Your agent is told which level it has, so it does not refuse work it is allowed
+to do or offer work it is not.
 
 **Your computer has the final say.** `serve --max-access` sets the highest
 level this computer allows. The setting in the MeetStream dashboard can lower
@@ -268,9 +288,11 @@ change can never give anyone more access than you allowed here.
 
 **Full** runs only when MIA guarantees that just you can talk to your agent
 (the activation code below, or a verified id); otherwise it drops to
-**Ask me first**. Antigravity and custom commands cannot ask before acting, so
-**Ask me first** runs them read-only. A custom `--command` always has your own
-permissions.
+**Ask first**. Custom commands cannot ask before acting, so **Ask first** runs
+them as **Meeting only**. A custom `--command` always has your own permissions.
+ACP agents (Antigravity, Hermes, Copilot, Muse, OpenClaw) ask the bridge before
+each command or file change, and the bridge answers by access level; an action
+your agent's own settings already allow is not asked about.
 
 ## Activation code
 
@@ -306,7 +328,7 @@ Found a problem? See [SECURITY.md](SECURITY.md).
 
 ```text
 $ meetstream-agent-kit doctor --agent claude
-MeetStream Agent Kit 0.3.0 doctor
+MeetStream Agent Kit 0.3.3 doctor
   ✓ python: Python 3.12.8
   ✓ config: /Users/you/.config/meetstream-agent-kit
   ✓ workdir: /Users/you/code/my-project
@@ -324,6 +346,9 @@ MeetStream Agent Kit 0.3.0 doctor
 | `the bridge is already running on port 8787` | use that one, or stop it first |
 | `Claude Code not found` | install it (`npm install -g @anthropic-ai/claude-code`), or pass `--binary` |
 | `login: expired` | run the sign-in command from [Supported agents](#supported-agents); MIA picks it up within 30 seconds |
+| setup: `ngrok is not connected to an ngrok account` | copy your authtoken from the ngrok dashboard and run `ngrok config add-authtoken <your authtoken>`, then pick **Check again** |
+| setup: `… ran but sent back no answer` | usually a sign-in the CLI is waiting for: pick **Sign in now**, or run the agent once on its own to see what it asks |
+| MIA says "That took too long, so I stopped it." | your agent gave no output for 60 s (`--timeout`); the bridge log shows `[timeout]`. Run `serve --debug` to see what the agent was doing (for example waiting on a permission or a long command) |
 | MIA says your agent is not reachable | check that `serve` and the tunnel are both running, and that MIA has the tunnel's current address |
 
 ## Commands
@@ -335,12 +360,16 @@ MeetStream Agent Kit 0.3.0 doctor
 | `list` | list pairings |
 | `revoke ID` | revoke a pairing; its token stops working at once |
 | `serve [options]` | run the bridge for MIA |
-| `doctor [options]` | check this computer and explain each fix |
-| `bench [options]` | time cold and warm turns for your agent |
+| `doctor [options]` | check this computer and explain each fix; for ACP agents it also starts the warm session and reports the meeting tools it loaded (`--no-warm` skips that) |
+| `context [show\|edit]` | what your agent reads on every meeting turn, with token estimates; edit your MEETING.md (your own meeting instructions) |
+| `bench [options]` | time cold and warm turns for your agent; `--compare` charts estimated tokens (and cost, where the CLI reports one) per hour of meeting for each model (`--models a,b`, `--turns-per-hour N`) |
 
 `serve`, `doctor` and `bench` take `--agent`, `--command`, `--binary`,
 `--workdir`, `--owner`, `--model`, `--effort` and `--timeout`. `serve` also
 takes `--port`, `--max-access` (`readonly`, `confirm` or `full`), `--no-prime`,
+`--debug` (log each message type the agent sends, never the text; also
+`MS_AGENT_KIT_DEBUG=1`), `--ignore-rules` (skip the work folder's CLAUDE.md /
+AGENTS.md where the agent CLI can),
 and `--tunnel` (`cloudflare`, `ngrok`, `url` or `none`) with `--tunnel-url` for
 an ngrok static domain or your own address. `MEETSTREAM_AGENT_KIT_HOME` moves the config folder. Every
 command has `--help`.

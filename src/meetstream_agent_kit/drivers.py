@@ -1,9 +1,9 @@
 """Warm drivers: how the bridge talks to a long-lived agent process.
 
-* :class:`StreamJsonDriver`: Claude Code and Antigravity, one JSON line per turn
-  in and stream-json events out.
-* :class:`AcpDriver`: Agent Client Protocol (JSON-RPC 2.0 over stdio): Hermes,
-  Copilot CLI, Muse Code, OpenClaw.
+* :class:`StreamJsonDriver`: Claude Code, one JSON line per turn in and
+  stream-json events out.
+* :class:`AcpDriver`: Agent Client Protocol (JSON-RPC 2.0 over stdio): Antigravity,
+  Hermes, Copilot CLI, Muse Code, OpenClaw.
 * :class:`CodexDriver`: ``codex app-server`` (typed JSON-RPC: threads and turns).
 
 A driver builds the agent's command line, reads its output into the session's
@@ -110,7 +110,7 @@ class Driver(ABC):
             self.session.end_turn()
 
 
-# ── Claude Code and Antigravity: stream-json ──────────────────────────────────
+# ── Claude Code (and a custom agy stream-json spec): stream-json ─────────────────
 
 
 class StreamJsonDriver(Driver):
@@ -162,6 +162,8 @@ class StreamJsonDriver(Driver):
         else:  # Antigravity has no system-prompt or MCP flags: the rules go in the first turn
             argv += cfg.agent.full_args if session.access == "full" else cfg.agent.readonly_args
         argv += cfg.agent.model_args(session.model)
+        if cfg.ignore_rules and cfg.agent.ignore_rules_warm:
+            argv += cfg.agent.ignore_rules_args
         argv += cfg.agent.effort_flags(cfg.effort)
         return argv
 
@@ -241,7 +243,7 @@ class StreamJsonDriver(Driver):
     def cancel(self) -> None:
         # stream-json has no "stop": restart the process and resume the conversation.
         if self.session.turn_running:
-            threading.Thread(target=self.session.restart, daemon=True).start()
+            self.session.restart_in_background()
 
 
 # ── JSON-RPC over stdio (shared by ACP and Codex app-server) ──────────────────
@@ -322,7 +324,7 @@ class _JsonRpcDriver(Driver):
                 yield message
 
 
-# ── ACP: Hermes, Copilot CLI, Muse Code, OpenClaw ─────────────────────────────
+# ── ACP: Antigravity, Hermes, Copilot CLI, Muse Code, OpenClaw ────────────────
 
 
 class AcpDriver(_JsonRpcDriver):
@@ -331,10 +333,14 @@ class AcpDriver(_JsonRpcDriver):
     def __init__(self, session: MeetingSession) -> None:
         super().__init__(session)
         self.acp_session_id: str | None = None
+        self.session_info: dict[str, Any] = {}
+        """What ``session/new`` returned (models, modes, config options)."""
         self._prompt_id: int | None = None
 
     def argv(self, resume: bool) -> list[str]:
-        return [self.binary, *self.session.config.agent.acp_args]
+        cfg = self.session.config
+        extra = cfg.agent.ignore_rules_args if cfg.ignore_rules and cfg.agent.ignore_rules_warm else ()
+        return [self.binary, *cfg.agent.acp_args, *extra]
 
     def mcp_server(self, capabilities: dict[str, Any]) -> dict[str, Any]:
         """The meeting tools as an MCP server the agent can reach; the secret never goes in argv."""
@@ -368,20 +374,59 @@ class AcpDriver(_JsonRpcDriver):
                     "clientInfo": _CLIENT_INFO,
                 },
             )
-            offer_mcp = bool(session.tools) and session.config.agent.acp_mcp
+            offer_mcp = bool(session.tools or session.local_tools_allowed) and session.config.agent.acp_mcp
             servers = [self.mcp_server(init.get("agentCapabilities") or {})] if offer_mcp else []
             created = self.request("session/new", {"cwd": str(session.config.workdir), "mcpServers": servers})
             self.acp_session_id = str(created.get("sessionId") or "")
+            self.session_info = created
+            advertised = {
+                str(m.get("modelId"))
+                for m in _as_dict(created.get("models")).get("availableModels") or []
+                if isinstance(m, dict)
+            }
+            if session.model and (session.config.agent.acp_set_model or session.model in advertised):
+                self._set_model(session.model)
+            if session.config.effort:
+                self._set_thought_level(created, session.config.effort)
             session.ready.set()
         except Exception as exc:
             self.acp_session_id = None
             session.emit("error", f"ACP start failed: {exc}")
             session.end_turn()
 
+    def _set_thought_level(self, created: dict[str, Any], effort: str) -> None:
+        """The effort as the session's ``thought_level`` option, when the agent offers one with that value."""
+        for option in created.get("configOptions") or []:
+            if not isinstance(option, dict) or option.get("category") != "thought_level":
+                continue
+            values = {str(o.get("value")) for o in option.get("options") or [] if isinstance(o, dict)}
+            if effort not in values:
+                self.session.log(
+                    f"effort {effort!r} is not offered here ({', '.join(sorted(values))}); kept its own"
+                )
+                return
+            try:
+                self.request(
+                    "session/set_config_option",
+                    {"sessionId": self.acp_session_id, "configId": option.get("id"), "value": effort},
+                    15.0,
+                )
+            except (RuntimeError, TimeoutError) as exc:
+                self.session.log(f"effort {effort!r} not set ({exc}); the agent's own level answers")
+            return
+
+    def _set_model(self, model: str) -> None:
+        """Ask for MIA's model; an agent that cannot switch keeps its own and the meeting goes on."""
+        try:
+            self.request("session/set_model", {"sessionId": self.acp_session_id, "modelId": model}, 15.0)
+        except (RuntimeError, TimeoutError) as exc:
+            self.session.log(f"model {model!r} not set ({exc}); the agent's own model answers")
+
     def read(self, proc: subprocess.Popen[str]) -> None:
         session = self.session
         for message in self.messages(proc):
             method, msg_id = message.get("method"), message.get("id")
+            session.debug("acp <- " + acp_summary(message))
             if method is None and msg_id is not None:  # a response to us
                 if msg_id == self._prompt_id:
                     self._prompt_id = None
@@ -406,18 +451,30 @@ class AcpDriver(_JsonRpcDriver):
         self._finish(proc)
 
     def _answer(self, message: dict[str, Any]) -> None:
-        if message.get("method") != "session/request_permission":
-            self.reply_unsupported(message)
-            return
-        params = message.get("params") or {}
-        allowed = self.permission_decision(params.get("toolCall") or {})
-        wanted = ("allow_once", "allow_always") if allowed else ("reject_once", "reject_always")
-        options = params.get("options") or []
-        choice = next((o for kind in wanted for o in options if o.get("kind") == kind), None)
-        outcome = (
-            {"outcome": "selected", "optionId": choice["optionId"]} if choice else {"outcome": "cancelled"}
-        )
-        self.send({"id": message["id"], "result": {"outcome": outcome}})
+        """Every request from the agent gets an answer: an unanswered one stalls the turn for good."""
+        try:
+            if message.get("method") != "session/request_permission":
+                self.session.debug(f"acp -> error: {message.get('method')} is not supported")
+                self.reply_unsupported(message)
+                return
+            params = _as_dict(message.get("params"))
+            allowed = self.permission_decision(_as_dict(params.get("toolCall")))
+            options = [o for o in params.get("options") or [] if isinstance(o, dict)]
+            choice = _permission_option(options, allowed)
+            outcome = (
+                {"outcome": "selected", "optionId": choice["optionId"]}
+                if choice
+                else {"outcome": "cancelled"}
+            )
+            self.session.debug(
+                f"acp -> permission {'allowed' if allowed else 'denied'} "
+                f"({self.session.access}): {outcome.get('optionId') or 'cancelled'}"
+            )
+            self.send({"id": message["id"], "result": {"outcome": outcome}})
+        except Exception as exc:  # a malformed request must still be answered
+            self.session.log(f"could not answer the agent's {message.get('method')}: {exc}")
+            with contextlib.suppress(Exception):
+                self.send({"id": message["id"], "error": {"code": -32603, "message": "the bridge failed"}})
 
     def permission_decision(self, tool_call: dict[str, Any]) -> bool:
         """Reads and meeting tools are fine; edits, deletes, moves and shell follow the access level."""
@@ -426,7 +483,7 @@ class AcpDriver(_JsonRpcDriver):
             return False
         kind = str(tool_call.get("kind") or "other")
         title = str(tool_call.get("title") or "")
-        if kind in _SAFE_ACP_KINDS or any(name and name in title for name in session.tool_names()):
+        if kind in _SAFE_ACP_KINDS or any(name and name in title for name in session.offered_tool_names()):
             return True
         raw_input = json.dumps(tool_call.get("rawInput") or {})[:200]
         return session.allow_action(f"{kind}: {title} {raw_input}")
@@ -441,6 +498,7 @@ class AcpDriver(_JsonRpcDriver):
         if session.started_turns == 0:  # ACP has no system-prompt field: the rules lead the first turn
             text = session.rules() + "\n\n" + text
         self._prompt_id = self.next_id()
+        session.debug(f"acp -> session/prompt id={self._prompt_id}")
         self.send(
             {
                 "id": self._prompt_id,
@@ -451,8 +509,52 @@ class AcpDriver(_JsonRpcDriver):
 
     def cancel(self) -> None:
         if self.acp_session_id and self._prompt_id is not None:
+            self.session.debug("acp -> session/cancel")
             with contextlib.suppress(BrokenPipeError, ValueError, OSError):  # gone: the turn ends anyway
                 self.send({"method": "session/cancel", "params": {"sessionId": self.acp_session_id}})
+
+
+def _permission_option(options: list[dict[str, Any]], allowed: bool) -> dict[str, Any] | None:
+    """The option that says yes (or no): by ACP kind, then by a kind or name that starts that way."""
+    exact = ("allow_once", "allow_always") if allowed else ("reject_once", "reject_always")
+    prefixes = ("allow", "approve", "yes", "accept") if allowed else ("reject", "deny", "no", "decline")
+    usable = [o for o in options if o.get("optionId")]
+    for field, test in (("kind", exact), ("kind", prefixes), ("name", prefixes)):
+        for option in usable:
+            value = str(option.get(field) or "").lower()
+            if (value in test) if test is exact else value.startswith(test):
+                return option
+    return None
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def acp_summary(message: dict[str, Any]) -> str:
+    """One line about an ACP message, for ``--debug``: its kind, never the text people or the agent wrote."""
+    method, msg_id = message.get("method"), message.get("id")
+    params = _as_dict(message.get("params"))
+    if method == "session/update":
+        update = _as_dict(params.get("update"))
+        kind = str(update.get("sessionUpdate") or "?")
+        if kind.startswith("tool_call"):
+            return (
+                f"update {kind} {str(update.get('title') or '')[:80]} {update.get('status') or ''}".rstrip()
+            )
+        return f"update {kind}"
+    if method is not None and msg_id is not None:
+        call = _as_dict(params.get("toolCall"))
+        what = f" {call.get('kind') or ''} {str(call.get('title') or '')[:80]}".rstrip() if call else ""
+        return f"request {method} id={msg_id}{what}"
+    if method is not None:
+        return f"notification {method}"
+    if "error" in message:
+        error = _as_dict(message.get("error"))
+        return f"response id={msg_id} error {str(error.get('message') or '')[:120]}"
+    result = _as_dict(message.get("result"))
+    stop = f" stopReason={result['stopReason']}" if "stopReason" in result else ""
+    return f"response id={msg_id}{stop}"
 
 
 # ── Codex app-server ──────────────────────────────────────────────────────────
@@ -471,7 +573,10 @@ class CodexDriver(_JsonRpcDriver):
 
     def argv(self, resume: bool) -> list[str]:
         argv = [self.binary, "app-server"]
-        if self.session.tools:
+        cfg = self.session.config
+        if cfg.ignore_rules and cfg.agent.ignore_rules_warm:
+            argv += cfg.agent.ignore_rules_args
+        if self.session.tools or self.session.local_tools_allowed:
             server = f"mcp_servers.{MCP_SERVER_NAME}"
             argv += [
                 "-c",

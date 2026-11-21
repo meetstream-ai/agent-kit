@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 WarmDriver = Literal["claude_stream_json", "agy_stream_json", "acp", "codex_app_server"]
-"""Long-lived protocols: Claude Code and Antigravity stream-json, ACP, Codex app-server."""
+"""Long-lived protocols: Claude Code stream-json, ACP (Antigravity among others), Codex app-server.
+``agy_stream_json`` is kept for a custom spec; the built-in Antigravity uses ACP."""
 
 ParserName = Literal["claude_stream_json", "codex_jsonl", "agy_stream_json", "text"]
 """How one-shot output is read (see :mod:`meetstream_agent_kit.parsers`)."""
@@ -40,14 +41,34 @@ class AgentSpec:
     acp_args: tuple[str, ...] = ()
     acp_mcp: bool = True
     """False when the agent rejects per-session MCP servers (meeting tools are then not offered)."""
+    acp_set_model: bool = False
+    """The model is chosen per ACP session (``session/set_model``), not by a command-line flag."""
     effort_args: tuple[str, ...] = ()
     readonly_args: tuple[str, ...] = ()
     full_args: tuple[str, ...] = ()
     model_flag: str | None = None
     model_env: str | None = None
+    provider_flag: str | None = None
+    """For ``provider:model`` ids (Hermes): the provider goes to this flag, the model to ``model_flag``."""
+    ignore_rules_args: tuple[str, ...] = ()
+    """Skips the work folder's project rules (CLAUDE.md, AGENTS.md...) in one-run mode."""
+    ignore_rules_warm: bool = False
+    """``ignore_rules_args`` also work for the warm process."""
+    ignore_rules_env: tuple[tuple[str, str], ...] = ()
+    """Environment that skips some of them (both modes)."""
+    ignore_rules_note: str = ""
+    """What is and is not skipped, shown in setup."""
+    usage_file_flag: str | None = None
+    """One-run flag that writes a JSON usage report to a file (Hermes ``--usage-file``)."""
     login_check: tuple[str, ...] | None = None
     """Side-effect-free login check (arguments after the binary), or None when the CLI has none."""
     login_ok_codes: tuple[int, ...] = (0,)
+    install: str = ""
+    """The vendor's official install command (a shell line), shown before setup offers to run it."""
+    install_needs: tuple[str, ...] = ()
+    """Programs the install command needs (checked before it runs)."""
+    after_install: str = ""
+    """The vendor's first-run setup command, offered right after installing (when there is one)."""
 
     @property
     def can_confirm(self) -> bool:
@@ -55,12 +76,30 @@ class AgentSpec:
         return self.warm in CONFIRM_DRIVERS
 
     def model_args(self, model: str) -> list[str]:
-        return [self.model_flag, model] if model and self.model_flag else []
+        if not model or not self.model_flag:
+            return []
+        provider, name = split_provider(model) if self.provider_flag else ("", model)
+        return ([self.provider_flag, provider] if provider and self.provider_flag else []) + [
+            self.model_flag,
+            name,
+        ]
 
     def effort_flags(self, effort: str) -> list[str]:
         if not effort:
             return []
         return [part.replace("{effort}", effort) for part in self.effort_args]
+
+
+def split_provider(model: str) -> tuple[str, str]:
+    """``nous:anthropic/claude-x`` -> ("nous", "anthropic/claude-x"); ``vendor/model:free`` has none."""
+    head, sep, rest = model.partition(":")
+    if sep and head and "/" not in head and rest:
+        return head, rest
+    return "", model
+
+
+_CURL: Final = "curl -fsSL "
+_BASH: Final = " | bash"
 
 
 def _not_on_path(binary: str, label: str) -> str:
@@ -92,6 +131,11 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             login_check=("auth", "status"),
             relogin="claude auth login",
             install_hint="Install Claude Code: npm install -g @anthropic-ai/claude-code",
+            install="npm install -g @anthropic-ai/claude-code",
+            ignore_rules_args=("--setting-sources", "user"),
+            ignore_rules_warm=True,
+            ignore_rules_note="skips the folder's CLAUDE.md and project settings (--setting-sources user)",
+            install_needs=("npm",),
         ),
         # Codex never streams token deltas one-shot (the answer arrives whole);
         # its warm mode, `codex app-server`, does. Read-only is its default sandbox.
@@ -110,6 +154,11 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             login_check=("login", "status"),
             relogin="codex login",
             install_hint="Install Codex CLI: npm install -g @openai/codex",
+            install="npm install -g @openai/codex",
+            ignore_rules_args=("-c", "project_doc_max_bytes=0"),
+            ignore_rules_warm=True,
+            ignore_rules_note="skips the folder's AGENTS.md (-c project_doc_max_bytes=0)",
+            install_needs=("npm",),
         ),
         # Copilot's JSONL schema is not documented, so -s (answer text only).
         AgentSpec(
@@ -127,8 +176,13 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             model_flag="--model",
             relogin="copilot login",
             install_hint="Install GitHub Copilot CLI: npm install -g @github/copilot",
+            install="npm install -g @github/copilot",
+            install_needs=("npm",),
         ),
-        # Headless agy soft-denies actions that need review (its default).
+        # Antigravity: `agy acp` for warm sessions, so the meeting tools reach it as a
+        # per-session MCP server (its stream-json mode has no MCP flag). Under ACP it
+        # asks Allow/Deny for commands and file changes, and the bridge answers by
+        # access level. Single runs (`-p`) soft-deny actions that need review.
         AgentSpec(
             name="agy",
             label="Antigravity CLI",
@@ -136,12 +190,17 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             oneshot_args=("-p", "{prompt}", "--output-format", "stream-json"),
             prompt_via="arg",
             parser="agy_stream_json",
-            warm="agy_stream_json",
+            warm="acp",
+            acp_args=("acp",),
+            acp_set_model=True,
             effort_args=("--effort", "{effort}"),
             full_args=("--mode=accept-edits",),
             model_flag="--model",
             relogin="agy acp --login",
-            install_hint=_not_on_path("agy", "the Antigravity CLI"),
+            install_hint=f"Install the Antigravity CLI: {_CURL}https://antigravity.google/cli/install.sh{_BASH}",
+            ignore_rules_note="has no switch to skip the folder's rules; use the meeting workspace",
+            install="curl -fsSL https://antigravity.google/cli/install.sh | bash",
+            install_needs=("curl", "bash"),
         ),
         AgentSpec(
             name="muse",
@@ -154,7 +213,9 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             acp_args=("acp",),
             full_args=("--disable-approval",),
             relogin="muse   (sign in when prompted)",
-            install_hint=_not_on_path("muse", "Muse Code"),
+            install_hint=f"Install Muse Code: {_CURL}https://dev.meta.ai/install.sh{_BASH}",
+            install="curl -fsSL https://dev.meta.ai/install.sh | bash",
+            install_needs=("curl", "bash"),
         ),
         # Hermes Agent: ACP for warm sessions, -z for single runs. Under ACP the
         # bridge decides every edit/delete/move/execute permission request.
@@ -171,8 +232,18 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             readonly_args=("--safe-mode", "-t", "web,vision,session_search"),
             model_flag="-m",
             model_env="HERMES_INFERENCE_MODEL",
+            provider_flag="--provider",
+            usage_file_flag="--usage-file",
             relogin="hermes setup",
-            install_hint=_not_on_path("hermes", "Hermes Agent"),
+            install_hint=f"Install Hermes Agent: {_CURL}https://hermes-agent.nousresearch.com/install.sh{_BASH}",
+            ignore_rules_args=("--ignore-rules",),
+            ignore_rules_env=(("HERMES_IGNORE_RULES", "1"),),
+            ignore_rules_note=(
+                "skips AGENTS.md, SOUL.md and memory in single runs (--ignore-rules); in meetings "
+                "(hermes acp) only auto-loaded skills are skipped, so use the meeting workspace"
+            ),
+            install="curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+            install_needs=("curl", "bash"),
         ),
         # OpenClaw: turns go through its Gateway. `openclaw acp` rejects
         # per-session MCP servers, so meeting tools are not offered (text only).
@@ -191,7 +262,13 @@ AGENTS: Final[dict[str, AgentSpec]] = {
             login_check=("models", "status", "--json", "--check"),
             login_ok_codes=(0, 2),  # 2 = expiring soon, still usable
             relogin="openclaw models auth login --provider <your provider>",
-            install_hint=_not_on_path("openclaw", "OpenClaw (and run `openclaw onboard --install-daemon`)"),
+            install_hint=(
+                "Install OpenClaw: curl -fsSL https://openclaw.ai/install.sh | bash, "
+                "then run: openclaw onboard --install-daemon"
+            ),
+            install="curl -fsSL https://openclaw.ai/install.sh | bash",
+            install_needs=("curl", "bash"),
+            after_install="openclaw onboard --install-daemon",
         ),
     )
 }

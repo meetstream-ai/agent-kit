@@ -13,6 +13,7 @@ from __future__ import annotations
 import hmac
 import json
 import re
+import sys
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +22,7 @@ from typing import Any, Final
 from meetstream_agent_kit import __version__
 from meetstream_agent_kit.access import effective_access
 from meetstream_agent_kit.activation import ActivationGate
+from meetstream_agent_kit.alerts import failure_kind, message_for
 from meetstream_agent_kit.config import BridgeConfig
 from meetstream_agent_kit.console import say
 from meetstream_agent_kit.constants import (
@@ -29,7 +31,9 @@ from meetstream_agent_kit.constants import (
     MAX_BODY_BYTES,
     MAX_TOOLS,
     MCP_SERVER_NAME,
+    TIMEOUT_REPLY,
 )
+from meetstream_agent_kit.local_apps import LOCAL_TOOLS
 from meetstream_agent_kit.login import LoginChecker
 from meetstream_agent_kit.pairing import PairingError, PairingStore
 from meetstream_agent_kit.prompts import format_turn
@@ -42,6 +46,10 @@ _PRIME_TURN: Final = (
 )
 
 Body = dict[str, Any]
+
+
+_HANGUPS: Final = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)
+"""Errors that only mean the other side went away."""
 
 
 class BridgeServer(ThreadingHTTPServer):
@@ -109,6 +117,18 @@ class BridgeServer(ThreadingHTTPServer):
             old.close()
         new.start()
         return new, False
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """A client that hangs up (MIA, ngrok, a closed tab) is normal: no traceback for that.
+
+        It shows as one line with ``--debug``. Anything else keeps the full traceback.
+        """
+        error = sys.exc_info()[1]
+        if isinstance(error, _HANGUPS):
+            if self.config.debug:
+                say(f"[debug] connection closed by the client ({type(error).__name__})")
+            return
+        super().handle_error(request, client_address)
 
     def end_session(self, session_id: str) -> bool:
         with self.sessions_lock:
@@ -374,6 +394,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         agent = self.server.config.agent
         try:
             for event in session.run_turn(format_turn(messages)):
+                kind = failure_kind(event)
+                if kind:  # MIA stays quiet; the owner hears it on their desktop, once per kind
+                    if event["type"] == "error":
+                        event["reason"] = kind
+                    session.alert_once(kind, message_for(kind, agent, str(event.get("message") or "")))
                 if event["type"] == "error" and event.get("code") == "auth_required":
                     self.server.login.mark_expired(str(event.get("message") or ""))
                     event["relogin"] = agent.relogin
@@ -381,7 +406,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     self._log(f"[tool] {event['name']}")
                 elif event["type"] == "done":
                     first, total = event.get("first_output_ms"), event.get("total_ms")
-                    self._log(f"[done] first output {first} ms, total {total} ms")
+                    if event.get("timed_out"):
+                        self._log(f"[timeout] stopped after {total} ms; MIA says: {TIMEOUT_REPLY}")
+                    else:
+                        self._log(f"[done] first output {first} ms, total {total} ms")
+                elif event["type"] == "error":  # never silent: every failed turn shows here
+                    self._log(f"[error] {event.get('code')}: {str(event.get('message') or '')[:200]}")
                 self._chunk(event)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
@@ -437,13 +467,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             }
         elif method == "tools/list":
             result = {"tools": session.mcp_tools()}
+            session.mcp_tools_listed = len(result["tools"])
         elif method == "ping":
             result = {}
         elif method == "tools/call":
             name = str(params.get("name") or "")
             raw_args = params.get("arguments")
             args: Body = raw_args if isinstance(raw_args, dict) else {}
-            if name == APPROVE_TOOL and session.access == "confirm":
+            if name in LOCAL_TOOLS:  # the bridge's own tools, run on this computer
+                output, is_error = session.local_tool(name, args)
+                result = {"content": [{"type": "text", "text": output}], "isError": is_error}
+            elif name == APPROVE_TOOL and session.access == "confirm":
                 result = self._approve(args)
             elif name in session.tool_names():
                 output, is_error = session.call_tool(name, args)
@@ -473,5 +507,5 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
 def _prime(session: MeetingSession) -> None:
     """One tiny turn so the agent's prompt cache is warm before anyone speaks."""
-    for _ in session.run_turn(_PRIME_TURN):
+    for _ in session.run_turn(_PRIME_TURN, warmup=True):
         pass
