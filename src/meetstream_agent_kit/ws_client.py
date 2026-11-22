@@ -61,7 +61,14 @@ class WebSocket:
             port = parts.port or 80
         else:
             raise WebSocketError("the relay address must start with wss://")
-        raw = socket.create_connection((host, port), timeout=timeout)
+        # Testing only: MEETSTREAM_RELAY_RESOLVE="host:ip" dials that IP while TLS still
+        # checks the certificate for ``host`` (like curl --resolve). For a DNS name
+        # that is not resolvable yet on this network.
+        dial = host
+        pin = os.environ.get("MEETSTREAM_RELAY_RESOLVE", "")
+        if pin.partition(":")[0] == host and pin.partition(":")[2]:
+            dial = pin.partition(":")[2]
+        raw = socket.create_connection((dial, port), timeout=timeout)
         sock: socket.socket = raw
         if parts.scheme == "wss":
             context = ssl.create_default_context()
