@@ -132,8 +132,10 @@ It walks you through seven short steps, with arrow-key menus: which agent should
 answer (it lists the ones it finds on your computer and checks they are signed
 in; pick one that is missing and it shows the vendor's official install command
 and offers to run it), which model and effort it uses (listed by the CLI itself,
-each with an estimated tokens-per-hour bar, what it can do in a meeting, and a
-"Measure live" option that runs one short turn per model), the folder
+each with an estimated tokens-per-hour bar, what an hour would cost at the
+vendor's API rates, a "plan" tag when the CLI is signed in on a subscription or
+free plan, what it can do in a meeting, and a "Measure live" option that runs
+one short turn per model, four at a time), the folder
 it works in, the most access this computer allows, how
 MeetStream reaches your computer, and your name. Then it tests your agent.
 
@@ -265,8 +267,13 @@ shasum -a 256 --check --ignore-missing SHA256SUMS
 python3 meetstream-agent-kit.pyz --help
 ```
 
-The bridge uses the Python standard library only. There are no dependencies to
-audit, and nothing else is installed.
+The `.pyz` uses the Python standard library only: there are no dependencies to
+audit, and nothing else is installed. Its setup uses the built-in menus. The
+PyPI package adds two well-known libraries for setup's terminal screens:
+[prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit)
+(menus and text prompts that redraw cleanly and go back with Esc) and
+[rich](https://github.com/Textualize/rich) (step headers, boxes and spinners).
+The bridge itself does not use them.
 
 ## Supported agents
 
@@ -381,7 +388,7 @@ MeetStream Agent Kit 0.3.3 doctor
 | `serve [options]` | run the bridge for MIA |
 | `doctor [options]` | check this computer and explain each fix; for ACP agents it also starts the warm session and reports the meeting tools it loaded (`--no-warm` skips that) |
 | `context [show\|edit]` | what your agent reads on every meeting turn, with token estimates; edit your MEETING.md (your own meeting instructions) |
-| `bench [options]` | time cold and warm turns for your agent; `--compare` charts estimated tokens (and cost, where the CLI reports one) per hour of meeting for each model (`--models a,b`, `--turns-per-hour N`) |
+| `bench [options]` | time cold and warm turns for your agent; `--compare` charts estimated tokens and API-rate cost per hour of meeting for each model, a few at a time with one retry for transient failures (`--models a,b`, `--parallel N`, `--turns-per-hour N`) |
 
 `serve`, `doctor` and `bench` take `--agent`, `--command`, `--binary`,
 `--workdir`, `--owner`, `--model`, `--effort` and `--timeout`. `serve` also

@@ -22,7 +22,7 @@ import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
-from typing import Final
+from typing import Any, Final
 
 _CODES: Final[dict[str, str]] = {
     "bold": "1",
@@ -127,7 +127,27 @@ def header(title: str, version: str, tagline: str) -> None:
     _write(paint(bottom, "dim"))
 
 
+def _rich() -> Any:
+    """A rich Console for a colour terminal, else None (plain lines; also the dependency-free .pyz)."""
+    if not (is_interactive() and use_color()):
+        return None
+    try:
+        from rich.console import Console
+    except ImportError:  # pragma: no cover - the .pyz has no dependencies
+        return None
+    return Console(highlight=False, soft_wrap=False)
+
+
 def step(number: int, total: int, title: str) -> None:
+    console = _rich()
+    if console is not None:
+        from rich.rule import Rule
+
+        console.print()
+        console.print(
+            Rule(f"[bold #22d3ee]{number}/{total}[/]  [bold]{title}[/]", align="left", style="grey37")
+        )
+        return
     label = f" {number}/{total}  {title} "
     rule = "─" * max(4, min(width(), 72) - len(label) - 2)
     _write("")
@@ -135,6 +155,20 @@ def step(number: int, total: int, title: str) -> None:
 
 
 def box(title: str, rows: Sequence[tuple[str, str]]) -> None:
+    console = _rich()
+    if console is not None:
+        from rich.panel import Panel
+        from rich.table import Table
+
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="grey62", no_wrap=True)
+        grid.add_column(overflow="fold")
+        for key, value in rows:
+            grid.add_row(key, plain(value))
+        console.print(
+            Panel(grid, title=f"[bold]{title}[/]", title_align="left", border_style="grey37", expand=False)
+        )
+        return
     """A titled box of ``label  value`` rows (no secrets: values here are not meant to be copied)."""
     key_w = max((len(k) for k, _ in rows), default=0)
     lines = [f"{k.ljust(key_w)}  {v}" for k, v in rows]
@@ -155,6 +189,11 @@ def box(title: str, rows: Sequence[tuple[str, str]]) -> None:
 
 @contextlib.contextmanager
 def spinner(text: str) -> Iterator[None]:
+    console = _rich()
+    if console is not None:
+        with console.status(f"[#22d3ee]{text}[/]", spinner="dots"):
+            yield
+        return
     """Animate while a slow step runs; a plain ``text...`` line when not on a terminal."""
     if not is_interactive():
         _write(f"  {text}...")
@@ -314,14 +353,18 @@ def answered(question: str, answer: str) -> None:
     )
 
 
-def question_prompt(question: str, default: str) -> str:
+def question_prompt(question: str, default: str, *, back: bool = False) -> str:
     hint = f" {paint('(' + default + ')', 'dim')}" if default else ""
-    return f"{paint('?', 'cyan', 'bold')} {paint(question, 'bold')}{hint} {paint(_ANSWER_MARK, 'dim')} "
+    back_hint = f" {paint('< goes back', 'dim')}" if back else ""
+    mark = paint(_ANSWER_MARK, "dim")
+    return f"{paint('?', 'cyan', 'bold')} {paint(question, 'bold')}{hint}{back_hint} {mark} "
 
 
 ESC_SEQUENCE_WAIT_S = 0.25
 """After an escape byte, how long to wait for the rest of an arrow key that arrives in pieces."""
 
+BACK_LABEL: Final = "← Back"
+_BACK: Final = ("\x1b", "\x1b[D", "\x1bOD")
 _UP: Final = ("\x1b[A", "\x1bOA", "k")
 _DOWN: Final = ("\x1b[B", "\x1bOB", "j")
 
@@ -384,8 +427,11 @@ def arrow_select(
     default: int = 0,
     hints: Sequence[str] = (),
     detail: Callable[[int], str] | None = None,
+    back: bool = False,
 ) -> int:
-    """Pick one option with ↑/↓ (or j/k, or its number) and Enter. Needs a terminal."""
+    """Pick one option with ↑/↓ (or j/k, or its number) and Enter. Needs a terminal.
+
+    With ``back``, Esc or ← returns -1 (go to the previous step)."""
     import termios  # Unix only; callers check is_interactive() first
     import tty
 
@@ -435,6 +481,9 @@ def arrow_select(
             if key == "\x04":  # Ctrl-D keeps the default, like end of input elsewhere
                 current = default
                 break
+            if back and key in _BACK:  # Esc or ←: the previous step
+                current = -1
+                break
             if key in _UP:
                 current = (current - 1) % len(options)
             elif key in _DOWN:
@@ -448,6 +497,9 @@ def arrow_select(
         # Fold the menu into one answered line.
         sys.stdout.write(f"\x1b[{lines + 1}F\x1b[J")
         sys.stdout.flush()
+    if current == -1:
+        answered(question, BACK_LABEL)
+        return -1
     # With a detail line the options are table rows: the answer is their first column.
     answer = plain(options[current]).split("  ")[0].strip() if detail is not None else options[current]
     answered(question, answer)

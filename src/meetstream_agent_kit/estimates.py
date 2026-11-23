@@ -7,12 +7,13 @@ import json
 import math
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from meetstream_agent_kit import shared_estimates, ui
+from meetstream_agent_kit import pricing, shared_estimates, ui
 from meetstream_agent_kit.agents import AgentSpec
 from meetstream_agent_kit.models import ModelChoice, features
 from meetstream_agent_kit.pairing import default_home
@@ -103,10 +104,20 @@ def load_with_shared(agent: str, shared: list[dict[str, Any]] | None = None) -> 
     return found
 
 
+_SAVING = threading.Lock()
+"""Measurements finish on several threads at once; each save reads, merges and replaces the file."""
+
+
 def save(agent: str, model: str, measured: Measured) -> None:
     """Atomically keep a successful measurement, with owner-only permissions."""
     if measured.usage is None or measured.error:
         return
+    with _SAVING:
+        _save(agent, model, measured)
+
+
+def _save(agent: str, model: str, measured: Measured) -> None:
+    assert measured.usage is not None  # noqa: S101 - checked by save()
     temporary: Path | None = None
     try:
         path = default_home() / "model-usage.json"
@@ -131,15 +142,39 @@ def save(agent: str, model: str, measured: Measured) -> None:
                 temporary.unlink(missing_ok=True)
 
 
+def hour_cost(agent: AgentSpec, model: str, turn: Usage | None) -> tuple[float | None, str]:
+    """An hour at API rates and where the number comes from; (None, "") when no price is known."""
+    if turn is None:
+        return None, ""
+    hour = project_hour(turn)
+    if hour.cost_usd is not None:
+        return hour.cost_usd, f"{agent.label}'s own estimate"
+    price = pricing.price_for(model, pricing.load())
+    if price is None:
+        return None, ""
+    return pricing.hour_cost(hour, turn, price), f"{price.vendor} list prices, {price.as_of}"
+
+
+_TAG_STYLE = {pricing.PLAN: "magenta", pricing.FREE: "green", pricing.API: "yellow"}
+
+
 def row_text(
     agent: AgentSpec, model: ModelChoice, estimate: Estimate | None, largest: int, *, name_width: int = 24
 ) -> str:
-    """A clipped usage bar, feature chips and cold first-output time."""
+    """A clipped usage bar, the hour at API rates, a plan tag, feature chips and cold first-output time."""
     hour = project_hour(estimate.usage) if estimate else None
     filled = bar(hour.total, largest, 10) if hour else ""
-    usage = f"{human_tokens(hour.total)}/h" if hour else "not measured"
-    if hour and hour.cost_usd is not None:
-        usage += f" ${hour.cost_usd:.2f}/h"
+    usage = (
+        f"{human_tokens(hour.total)}/h" if hour else ("not measured" if agent.reports_usage else "usage n/a")
+    )
+    kind = pricing.plan_kind(agent.name, model.id)
+    cost, _ = hour_cost(agent, model.id, estimate.usage if estimate else None)
+    if kind == pricing.FREE:
+        usage += " " + ui.paint("free", "green")
+    else:
+        usage += " " + (ui.paint("≈" + pricing.money(cost), "yellow") if cost is not None else "—")
+        if kind:
+            usage += " " + ui.paint(kind, _TAG_STYLE[kind])
     chips = []
     for feature in features(agent, model):
         label = (
@@ -154,13 +189,28 @@ def row_text(
         if estimate and estimate.first_output_ms is not None
         else "—"
     )
-    if estimate and estimate.source.startswith("measured by MeetStream "):
-        speed += "  " + ui.paint("MS " + estimate.measured_at[5:10], "dim")  # the detail line spells it out
     tail = f"[{ui.paint(filled.ljust(10), 'cyan')}] {usage}  {' '.join(chips)}  {speed}"
     room = ui.width() - 6  # space for a two-digit menu number or the arrow
     name_width = max(8, min(name_width, room - len(ui.plain(tail)) - 2))
     name = ui.clip(model.id or "The CLI's default", name_width).ljust(name_width)
     return ui.clip(f"{name}  {tail}", room)
+
+
+def _billing_text(agent: AgentSpec, model: str, estimate: Estimate | None) -> list[str]:
+    kind = pricing.plan_kind(agent.name, model)
+    if kind == pricing.FREE:
+        return ["free model"]
+    cost, source = hour_cost(agent, model, estimate.usage if estimate else None)
+    parts = []
+    if cost is not None:
+        parts.append(f"≈ {pricing.money(cost)}/h at API rates (estimate; {source})")
+    elif estimate is not None:
+        parts.append("API price unknown")
+    if kind == pricing.PLAN:
+        parts.append("on your plan: no per-token bill")
+    elif kind == pricing.API:
+        parts.append("billed per token (API key)")
+    return parts
 
 
 def detail_text(agent: AgentSpec, model: ModelChoice, estimate: Estimate | None) -> str:
@@ -170,14 +220,18 @@ def detail_text(agent: AgentSpec, model: ModelChoice, estimate: Estimate | None)
         hour = project_hour(estimate.usage)
         parts += [
             f"≈ {human_tokens(hour.total)} tokens/h",
-            f"≈ ${hour.cost_usd:.2f}/h" if hour.cost_usd is not None else "plan usage, no per-token bill",
+            *_billing_text(agent, model.id, estimate),
             f"first words ~{estimate.first_output_ms / 1000:.0f} s (cold)"
             if estimate.first_output_ms is not None
             else "first words —",
             estimate.source,
         ]
-    else:
+    elif agent.reports_usage:
         parts.append("not measured yet")
+    else:
+        parts.append(f"usage not available: {agent.label} doesn't report token usage")
+    if not estimate:
+        parts += _billing_text(agent, model.id, None)  # the plan, when known
     names = {"talk": "talk", "tools": "meeting tools", "vision": "vision", "local": "local actions"}
     descriptions = []
     for feature in features(agent, model):
@@ -192,6 +246,6 @@ def detail_text(agent: AgentSpec, model: ModelChoice, estimate: Estimate | None)
             name += f" ({feature.source})"
         descriptions.append(name)
     parts.append(", ".join(descriptions))
-    if not estimate:
+    if not estimate and agent.reports_usage:
         parts.append('pick "Measure live" to run one short turn per model')
     return " · ".join(parts)

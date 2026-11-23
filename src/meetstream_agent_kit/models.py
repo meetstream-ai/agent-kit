@@ -55,6 +55,8 @@ class ModelCatalog:
     error: str = ""
     vision: bool | None = None
     vision_source: str = ""
+    note: str = ""
+    """Something the user should know about this list, shown under it."""
 
     def efforts_for(self, model: str) -> list[str]:
         chosen = next((m for m in self.models if m.id == model), None)
@@ -210,6 +212,107 @@ def _rpc_session(
     return results
 
 
+_HERMES_SECTIONS: Final = {
+    "model": "alias",
+    "fallback_providers": "fallback",
+    "delegation": "delegation",
+    "moa": "MoA",
+}
+"""Top-level config.yaml blocks whose ``provider:`` + ``model:`` pairs Hermes can run (not stt, tts…)."""
+
+
+@dataclass
+class _Frame:
+    indent: int
+    parent: str
+    values: dict[str, str] = field(default_factory=dict)
+
+
+def _yaml_scalar(value: str) -> str:
+    value = value.strip()
+    quoted = re.match(r"""^(["'])(.*?)\1(\s+#.*)?$""", value)
+    if quoted:
+        return quoted.group(2)
+    return re.split(r"\s+#", value, maxsplit=1)[0].strip()
+
+
+def hermes_models_from(text: str) -> list[ModelChoice]:
+    """The ``provider:model`` pairs in Hermes' config.yaml: aliases, fallbacks, delegation, MoA.
+
+    ``hermes -m provider:model`` (and ACP's ``session/set_model``) accept these. A small reader for
+    the block mappings and ``- provider:`` list items Hermes writes; no YAML library needed.
+    """
+    found: list[ModelChoice] = []
+    frames: list[_Frame] = []
+    every: list[tuple[str, _Frame]] = []
+    section = ""
+    open_keys: dict[int, str] = {}  # "key:" with no value, by indent: the parent of what follows
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        content = raw.strip()
+        if indent == 0:
+            section, frames, open_keys = content.split(":", 1)[0].strip(), [], {}
+            continue
+        if section not in _HERMES_SECTIONS:
+            continue
+        item = content.startswith("- ")
+        if item:
+            content, indent = content[2:].strip(), indent + 2
+        while frames and (frames[-1].indent > indent or (item and frames[-1].indent == indent)):
+            frames.pop()
+        if not frames or frames[-1].indent < indent:
+            parent = next((open_keys[i] for i in sorted(open_keys, reverse=True) if i < indent), "")
+            frames.append(_Frame(indent, parent))
+            every.append((section, frames[-1]))
+        if ":" not in content:
+            continue
+        key, value = content.split(":", 1)
+        key, value = key.strip(), _yaml_scalar(value)
+        for deeper in [i for i in open_keys if i >= indent]:
+            del open_keys[deeper]
+        if value:
+            frames[-1].values[key] = value
+        else:
+            open_keys[indent] = key
+    for block, frame in every:
+        provider, model = frame.values.get("provider", ""), frame.values.get("model", "")
+        if not provider or not model:
+            continue
+        kind = _HERMES_SECTIONS[block]
+        label = f"alias {frame.parent}" if kind == "alias" and frame.parent else kind
+        found.append(ModelChoice(f"{provider}:{model}", label))
+    return unique(found)
+
+
+def _hermes_catalog(home: Path | None = None) -> ModelCatalog:
+    """Hermes' models from its own files, without starting it (its ACP model list can take over 30 s)."""
+    root = (home or Path.home()) / ".hermes"
+    try:
+        text = (root / "config.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return ModelCatalog(error="no ~/.hermes/config.yaml")
+    catalog = ModelCatalog(hermes_models_from(text), source="~/.hermes/config.yaml")
+    cached = _read_json(root / "provider_models_cache.json")
+    known = [
+        f"{provider}:{model}"
+        for provider, entry in cached.items()
+        if isinstance(entry, dict) and isinstance(entry.get("models"), list)
+        for model in entry["models"]
+        if isinstance(model, str) and model != "auto"
+    ]
+    listed = {m.id for m in catalog.models}
+    main = _yaml_block_value(text, "model", "provider")
+    extra = sorted((m for m in known if m not in listed), key=lambda m: not m.startswith(f"{main}:"))
+    if extra:
+        catalog.note = (
+            f"Hermes knows {len(extra)} more models from your signed-in providers. To use one, pick "
+            f'"Type another model id" and enter provider:model, for example {extra[0]}.'
+        )
+    return catalog
+
+
 def _acp_catalog(agent: AgentSpec, binary: str, timeout_s: float) -> ModelCatalog:
     init = {
         "protocolVersion": 1,
@@ -237,11 +340,15 @@ def acp_catalog_from(
     image = _as_dict(capabilities.get("promptCapabilities")).get("image")
     vision = image if isinstance(image, bool) else None
     vision_source = source if vision is not None else ""
-    models = [
-        ModelChoice(str(m["modelId"]), str(m.get("name") or ""), vision=vision, vision_source=vision_source)
-        for m in raw.get("availableModels") or []
-        if isinstance(m, dict) and m.get("modelId")
-    ]
+    models = unique(
+        [
+            ModelChoice(
+                str(m["modelId"]), str(m.get("name") or ""), vision=vision, vision_source=vision_source
+            )
+            for m in raw.get("availableModels") or []
+            if isinstance(m, dict) and m.get("modelId")
+        ]
+    )
     efforts: list[str] = []
     current_effort = ""
     for option in created.get("configOptions") or []:
@@ -331,6 +438,17 @@ def claude_catalog_from(help_text: str) -> ModelCatalog:
     return ModelCatalog(models, "", _help_list(help_text, "--effort"), "", "from claude --help")
 
 
+def unique(models: list[ModelChoice]) -> list[ModelChoice]:
+    """One row per model id, the first one kept (Copilot lists "auto" twice)."""
+    seen: set[str] = set()
+    out = []
+    for model in models:
+        if model.id not in seen:
+            seen.add(model.id)
+            out.append(model)
+    return out
+
+
 def catalog_for(
     agent: AgentSpec,
     binary: str,
@@ -340,11 +458,14 @@ def catalog_for(
     home: Path | None = None,
     acp: Callable[[AgentSpec, str, float], ModelCatalog] = _acp_catalog,
     codex: Callable[[str, float], ModelCatalog] = _codex_catalog,
+    hermes: Callable[[Path | None], ModelCatalog] = _hermes_catalog,
 ) -> ModelCatalog:
     """Ask the CLI. Never raises: a CLI that cannot list leaves an empty catalog with ``error``."""
     catalog = ModelCatalog()
     try:
-        if agent.warm == "acp":
+        if agent.name == "hermes":
+            catalog = hermes(home)
+        elif agent.warm == "acp":
             catalog = acp(agent, binary, timeout_s)
         elif agent.warm == "codex_app_server":
             catalog = codex(binary, timeout_s)
@@ -353,6 +474,14 @@ def catalog_for(
             catalog = claude_catalog_from(f"{proc.stdout}\n{proc.stderr}")
     except (OSError, RuntimeError, TimeoutError, subprocess.SubprocessError) as exc:
         catalog.error = str(exc)[:200]
+    if agent.name == "copilot" and [m.id for m in catalog.models] == ["auto"]:
+        # Checked 2026-11-21 (Copilot CLI 1.0.114): over ACP, which meetings use, such an account
+        # accepts only "auto" (--model is ignored, session/set_model rejects others), so no other
+        # list is offered here: picking one would fail in the meeting.
+        catalog.note = (
+            "Copilot offers only Auto to apps on this account. To use other models, enable them in "
+            "your Copilot settings (github.com/settings/copilot), then run setup again."
+        )
     if agent.name == "agy" and not catalog.models:
         try:
             proc = run([binary, "models"], capture_output=True, text=True, timeout=timeout_s, check=False)
@@ -367,6 +496,7 @@ def catalog_for(
     if model:
         catalog.default_model = model
         if not any(m.id == model for m in catalog.models):
+            catalog.source = catalog.source or "your CLI's settings"  # the list itself failed
             catalog.models.insert(
                 0,
                 ModelChoice(

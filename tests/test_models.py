@@ -252,7 +252,7 @@ def test_chart_bars_scale_and_say_what_is_estimated() -> None:
     high = next(line for line in lines if " high " in line)
     low = next(line for line in lines if " low " in line)
     assert high.count("█") > low.count("█")
-    assert "plan usage, no per-token bill" in low
+    assert low.rstrip().endswith("—")  # no CLI price and none in the table
     assert "$" in next(line for line in lines if " paid " in line)
     assert "Assumes 20 answered turns an hour" in text
     assert bar(1, 8, 1) == "▏"
@@ -409,7 +409,10 @@ def test_setup_compares_models_then_lets_you_pick_again(
         measure_model=fake_measure,
     )
     out = capsys.readouterr().out
-    assert measured == [("gemini-3.8-flash-high", ""), ("gemini-3.8-flash-low", "")]  # CLI effort default
+    assert sorted(measured) == [
+        ("gemini-3.8-flash-high", ""),
+        ("gemini-3.8-flash-low", ""),
+    ]  # CLI effort default
     assert "Estimated tokens for one hour of meeting" in out
     assert answers.model == "claude-sonnet-4-6"
     assert answers.effort == ""

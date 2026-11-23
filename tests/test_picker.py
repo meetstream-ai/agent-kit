@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from meetstream_agent_kit import estimates, ui
+from meetstream_agent_kit import estimates, pricing, ui
 from meetstream_agent_kit.agents import AGENTS, custom_agent
 from meetstream_agent_kit.cli import _test_turn
 from meetstream_agent_kit.compare import Measured, measure
@@ -209,13 +209,23 @@ def test_rows_and_details_show_real_usage_and_first_words(
     assert "██████████" in row
     assert "223k/h" in row
     assert "~5 s cold" in row
-    assert ("$" in row) is (cost is not None)
-    assert ("plan usage, no per-token bill" in detail) is (cost is None)
-    assert ("$" in detail) is (cost is not None)
+    if cost is None:  # no price from the CLI: the dated table's Anthropic price for "sonnet"
+        assert "223k/h ≈$0.45" in row
+        assert "≈ $0.45/h at API rates (estimate; Anthropic list prices, 2026-11-21)" in detail
+    else:  # the CLI's own price wins
+        assert f"≈{pricing.money(project_hour(estimate.usage).cost_usd or 0)}" in row
+        assert "Claude Code's own estimate" in detail
+    no_cli_price = dataclasses.replace(estimate, usage=Usage(9800, output=20))
+    unpriced = row_text(
+        agent, ModelChoice("some-new-model"), no_cli_price, project_hour(no_cli_price.usage).total
+    )
+    assert "223k/h —" in unpriced
+    assert "API price unknown" in detail_text(agent, ModelChoice("some-new-model"), no_cli_price)
     assert "first words ~5 s (cold)" in detail
     assert "vision (from docs), local actions per access level" in detail
     empty = row_text(AGENTS["openclaw"], ModelChoice("unknown"), None, 0)
-    assert "[          ] not measured" in empty
+    assert "[          ] usage n/a" in empty  # OpenClaw does not report token usage
+    assert "[          ] not measured" in row_text(AGENTS["agy"], ModelChoice("unknown"), None, 0)
     assert "no-tools vision?" in empty
     assert "—" in empty
     assert 'pick "Measure live"' in detail_text(agent, model, None)
@@ -266,7 +276,7 @@ def test_plain_setup_measures_before_picking_and_refreshes_cache(
     )
     out = capsys.readouterr().out
     assert "Choose (numbers, comma-separated) [3,4,5,6]: " in prompts
-    assert measured == [("m2", ""), ("m3", ""), ("m4", ""), ("", "")]
+    assert sorted(measured) == sorted([("m2", ""), ("m3", ""), ("m4", ""), ("", "")])  # 4 at once
     assert out.count("Which model?") == 2
     first, second = out.split("Which model?")[1:]
     assert "██████████" in first
@@ -288,7 +298,7 @@ def test_picker_preserves_default_manual_id_and_cli_default(
     tmp_path: Path, reply: str, expected: str
 ) -> None:
     replies = iter([reply, "typed"])
-    model, effort = _pick_model(
+    model, effort, _asked = _pick_model(
         Prompter(lambda _: next(replies)),
         AGENTS["agy"],
         "agy",

@@ -4,6 +4,80 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.6] - Unreleased
+
+### Fixed
+
+- Copilot's model step showed "auto, auto": `copilot --acp --stdio` lists
+  `auto` twice and nothing else on many accounts. Model lists are now
+  de-duplicated for every agent (the picker never shows a row twice), and when
+  Copilot offers only Auto the step says how to enable other models. Checked
+  with Copilot CLI 1.0.114: over ACP such an account accepts only `auto`
+  (`--model` is ignored and `session/set_model` rejects other models), so no
+  longer list is offered.
+- Setup has a way back: every step after the first has a "← Back" row, and in
+  a terminal Esc or ← go back too (typed questions take `<`). Earlier answers
+  are kept and preselected; steps that asked nothing are skipped on the way
+  back; back from the effort question returns to the model menu.
+- A CLI that answers without reporting token usage (Copilot) is no longer
+  shown as a failure: the measurement shows its answer time and says the CLI
+  doesn't report usage. Picker rows say "usage n/a" (or MeetStream's published
+  estimate when there is one), and "Measure live" is only offered for CLIs that
+  report usage (Claude Code, Codex, Antigravity, Hermes).
+- When the only model on offer is the default (Copilot's Auto), setup says
+  "GitHub Copilot CLI picks the model itself (Auto)" instead of a menu with two
+  near-identical rows.
+- Setup crashed with `IndexError` in step 2 when Back was available: the model
+  menu's detail line had no text for the "← Back" row. Every menu now has
+  one, and a test walks every step, pressing Back once in each.
+- Esc and ← in a typed question went into the answer as escape characters.
+  They now go back a step.
+
+- Hermes' model step showed only its default ("picks the model itself") and
+  "1 model from " with no source. Setup now lists the default plus the
+  provider:model pairs in `~/.hermes/config.yaml` (aliases, fallbacks,
+  delegation, MoA), read without starting Hermes (its ACP model list can take
+  over 30 s), and says how many more models your signed-in providers offer
+  ("Type another model id" takes provider:model). Only Copilot's Auto skips
+  the menu. A list that falls back to the CLI's settings names that source.
+- Muse Code's installer leaves a small launcher that downloads the ~456 MB app
+  on first run. When that download died, setup still said "Muse Code found".
+  Setup now checks for the app beside the launcher: the agent menu says
+  "launcher only; app not downloaded yet", and at a terminal setup offers to
+  run the launcher's own download (`MUSE_LAUNCHER_INSTALL=1 muse`) with a
+  retry, instead of moving on.
+- API-rate prices matched the provider instead of the model for Hermes ids
+  such as `openai-codex:gpt-6.2-astra`.
+
+### Added
+
+- Model picker rows show what an hour would cost at the vendor's API rates
+  ("≈$0.17", or "—" when no price is known) and a "plan" tag when the CLI is
+  signed in on a subscription or free plan ("free" for `:free` models). The
+  detail line names the source: the CLI's own estimate, or the vendor's
+  published per-token list price with its date. The dated price table
+  (Anthropic, Google, OpenAI; input, output, cached) lives in the shared
+  estimates file under `prices`, so the weekly refresh can update it. Plan
+  detection reads only local sign-in files and never a secret.
+- "Measure live" and `bench --compare` measure models in parallel: a work
+  queue of 4 workers (`--parallel N`), each model in its own process and empty
+  folder, with per-model timeouts. A free worker takes the next model at once.
+  Transient failures (timeout, crash, rate limit, network) are retried once
+  after a short pause; sign-in and unknown-model errors are not. At a terminal
+  a live table shows each model (queued, its stage, retrying (1/1), ✓ or ✗
+  with the reason, seconds, tokens/h and cost) and a progress line with the
+  time left. Esc stops the rest and keeps the results so far. Picking more
+  than 6 models asks first, since each is a real turn on your plan.
+
+### Changed
+
+- Setup's terminal screens run on prompt_toolkit and rich, the package's first
+  two dependencies. Menus and text prompts redraw in place (also after a
+  resize), show key hints (↑↓ move · Enter pick · Esc back) and fold into one
+  answered line. Step headers are rules, and summaries are boxes. Without a
+  terminal the numbered questions are unchanged. The single-file `.pyz` still
+  has no dependencies and uses the built-in menus.
+
 ## [0.3.5] - 2026-11-22
 
 ### Added
