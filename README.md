@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> **The Agent Kit is replaced by the [`meetstream` CLI](https://github.com/meetstream-ai/cli).** It does everything the kit does, connects your agent over the MeetStream relay with no tunnel, and adds bots, transcripts and calendar in one binary.
+> `brew install meetstream-ai/tap/meetstream` · `npm i -g @meetstream/cli` · `pipx install meetstream-cli`, then `meetstream setup`. This repository is archived; 0.4.0 is the last release.
+
 <div align="center">
 
 # MeetStream Agent Kit

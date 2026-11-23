@@ -4,7 +4,21 @@ All notable changes to this package. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.3.7] - Unreleased
+## [0.4.0] - 2026-11-23
+
+Last release. The Agent Kit is replaced by the `meetstream` CLI
+([meetstream-ai/cli](https://github.com/meetstream-ai/cli)): the same setup,
+your agent over the MeetStream relay with no tunnel, plus bots, transcripts and
+calendar in one binary. Install it with `brew install meetstream-ai/tap/meetstream`,
+`npm i -g @meetstream/cli` or `pipx install meetstream-cli`.
+
+### Changed
+
+- Every command prints that notice on stderr (stdout and JSON are unchanged).
+  `MEETSTREAM_AGENT_KIT_NOTICE=off` hides it.
+- Includes the 0.3.6 and 0.3.7 changes below, which were not published on their own.
+
+## [0.3.7] - Not published on its own (shipped in 0.4.0)
 
 ### Added
 
@@ -18,7 +32,7 @@ All notable changes to this package. The format follows
   pre-rendered from the official mascot GIFs by `scripts/build_mascot.py`
   (dev only) and adds no dependencies.
 
-## [0.3.6] - Unreleased
+## [0.3.6] - Not published on its own (shipped in 0.4.0)
 
 ### Fixed
 
