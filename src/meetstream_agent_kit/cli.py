@@ -865,7 +865,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 REPLACED_NOTICE = (
     "meetstream-agent-kit is replaced by the meetstream CLI (one binary, same setup, no tunnel).\n"
-    "  Install: brew install meetstream-ai/tap/meetstream  |  npm i -g @meetstream/cli  |  pipx install meetstream-cli\n"
+    "  Install: brew install meetstream-ai/tap/meetstream  |  npm i -g @meetstream/cli\n"
+    "       or: pipx install meetstream-cli\n"
     "  Then run: meetstream setup   (docs: https://github.com/meetstream-ai/cli)"
 )
 
