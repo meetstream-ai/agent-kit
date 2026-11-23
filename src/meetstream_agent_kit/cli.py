@@ -863,7 +863,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+REPLACED_NOTICE = (
+    "meetstream-agent-kit is replaced by the meetstream CLI (one binary, same setup, no tunnel).\n"
+    "  Install: brew install meetstream-ai/tap/meetstream  |  npm i -g @meetstream/cli\n"
+    "       or: pipx install meetstream-cli\n"
+    "  Then run: meetstream setup   (docs: https://github.com/meetstream-ai/cli)"
+)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    if os.environ.get("MEETSTREAM_AGENT_KIT_NOTICE", "").lower() not in {"0", "off", "false"}:
+        print(REPLACED_NOTICE, file=sys.stderr)
     parser = build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "func", None) is None:
