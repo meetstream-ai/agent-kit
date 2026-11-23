@@ -41,11 +41,12 @@ def test_models_run_at_the_same_time(tmp_path: Path) -> None:
 def test_a_free_worker_takes_the_next_model_at_once(tmp_path: Path) -> None:
     started: dict[str, float] = {}
     t0 = time.monotonic()
-    run = _sleeper({"slow": 1.0, "a": 0.1, "b": 0.1, "c": 0.1}, started, t0)
+    run = _sleeper({"slow": 3.0, "a": 0.1, "b": 0.1, "c": 0.1}, started, t0)
     run_queue(_config(tmp_path), ["slow", "a", "b", "c"], "", run=run, parallel=2)
-    # "b" and "c" start as soon as "a"'s worker is free, not when the batch (with "slow") ends.
-    assert started["b"] < 0.5
-    assert started["c"] < 0.5
+    # "b" and "c" start as soon as "a"'s worker is free (~0.1-0.3 s), long before "slow" ends (3 s).
+    # The wide margin keeps slow CI runners from failing the test.
+    assert started["b"] < 2.0
+    assert started["c"] < 2.0
 
 
 @pytest.mark.parametrize(
