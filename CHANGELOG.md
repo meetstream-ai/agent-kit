@@ -78,7 +78,7 @@ All notable changes to this package. The format follows
   terminal the numbered questions are unchanged. The single-file `.pyz` still
   has no dependencies and uses the built-in menus.
 
-## [0.3.5] - Unreleased
+## [0.3.5] - 2026-11-22
 
 ### Added
 
@@ -99,7 +99,7 @@ All notable changes to this package. The format follows
   (gemini-3.8-flash low/medium/high, claude-sonnet-4-6) and Claude Code
   (haiku, sonnet).
 
-## [0.3.4] - Unreleased
+## [0.3.4] - Not published on its own (shipped in 0.3.5, 2026-11-22)
 
 ### Added
 
@@ -123,7 +123,7 @@ All notable changes to this package. The format follows
   reach the old process before the restart and take the cancelled turn's end
   as its own. The next turn now waits for that restart.
 
-## [0.3.3] - Unreleased
+## [0.3.3] - Not published on its own (shipped in 0.3.5, 2026-11-22)
 
 ### Added
 
@@ -192,7 +192,7 @@ All notable changes to this package. The format follows
   model. Without a terminal it prints one plain line. `bench` cold rows add
   `first_line_ms`.
 
-## [0.3.2] - Unreleased
+## [0.3.2] - Not published on its own (shipped in 0.3.5, 2026-11-22)
 
 ### Fixed
 
@@ -247,7 +247,7 @@ All notable changes to this package. The format follows
   agy does not take it, the bridge logs that and agy's own model answers.
   Single runs (the setup test, `bench`) still use `agy -p`.
 
-## [0.3.1] - Unreleased
+## [0.3.1] - Not published on its own (shipped in 0.3.5, 2026-11-22)
 
 ### Fixed
 
